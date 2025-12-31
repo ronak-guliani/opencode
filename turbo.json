@@ -9,6 +9,13 @@
     "opencode#test": {
       "dependsOn": ["^build"],
       "outputs": []
+    },
+    "mobile#build": {
+      "dependsOn": [],
+      "outputs": ["dist/**"]
+    },
+    "mobile#dev": {
+      "cache": false
     }
   }
 }
