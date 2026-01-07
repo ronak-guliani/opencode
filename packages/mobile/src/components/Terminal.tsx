@@ -3,20 +3,40 @@ import {
   View,
   Text,
   StyleSheet,
-  Platform,
   Animated,
+  Easing,
   FlatList,
   TouchableOpacity,
   ScrollView,
   RefreshControl,
   NativeSyntheticEvent,
   NativeScrollEvent,
+  TextInput,
 } from "react-native"
 import MarkdownDisplay from "react-native-markdown-display"
 import * as Clipboard from "expo-clipboard"
 import { useSessionStore, type Message } from "@/store/session"
 
 const Markdown = MarkdownDisplay as any
+
+const SelectableText = memo(function SelectableText({ 
+  text, 
+  style 
+}: { 
+  text: string
+  style?: any 
+}) {
+  return (
+    <TextInput
+      value={text}
+      multiline
+      editable={false}
+      scrollEnabled={false}
+      style={[style, styles.selectableTextInput]}
+      textAlignVertical="top"
+    />
+  )
+})
 
 const ReasoningBlock = memo(function ReasoningBlock({ text }: { text: string }) {
   const [isExpanded, setIsExpanded] = useState(false)
@@ -34,7 +54,7 @@ const ReasoningBlock = memo(function ReasoningBlock({ text }: { text: string }) 
       </TouchableOpacity>
       {isExpanded && (
         <ScrollView style={styles.reasoningContent} nestedScrollEnabled>
-          <Text style={styles.reasoningText}>{text}</Text>
+          <SelectableText text={text} style={styles.reasoningText} />
         </ScrollView>
       )}
     </View>
@@ -54,7 +74,7 @@ const ThinkingIndicator = memo(function ThinkingIndicator({ text }: { text: stri
     )
     pulse.start()
     return () => pulse.stop()
-  }, [])
+  }, [pulseAnim])
 
   return (
     <Animated.View style={[styles.thinkingWrapper, { opacity: pulseAnim }]}>
@@ -69,56 +89,34 @@ const ThinkingIndicator = memo(function ThinkingIndicator({ text }: { text: stri
   )
 })
 
-function TypingIndicator() {
-  const dot1 = useRef(new Animated.Value(0)).current
-  const dot2 = useRef(new Animated.Value(0)).current
-  const dot3 = useRef(new Animated.Value(0)).current
+const TypingIndicator = memo(function TypingIndicator() {
+  const pulse = useRef(new Animated.Value(0)).current
 
   useEffect(() => {
-    const animate = (dot: Animated.Value, delay: number) => {
-      return Animated.loop(
-        Animated.sequence([
-          Animated.delay(delay),
-          Animated.timing(dot, { toValue: 1, duration: 400, useNativeDriver: true }),
-          Animated.timing(dot, { toValue: 0, duration: 400, useNativeDriver: true }),
-          Animated.delay(400 - delay),
-        ]),
-      )
-    }
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 1200, useNativeDriver: true, easing: Easing.inOut(Easing.ease) }),
+        Animated.timing(pulse, { toValue: 0, duration: 1200, useNativeDriver: true, easing: Easing.inOut(Easing.ease) }),
+      ]),
+    )
+    animation.start()
+    return () => animation.stop()
+  }, [pulse])
 
-    const a1 = animate(dot1, 0)
-    const a2 = animate(dot2, 150)
-    const a3 = animate(dot3, 300)
-
-    a1.start()
-    a2.start()
-    a3.start()
-
-    return () => {
-      a1.stop()
-      a2.stop()
-      a3.stop()
-    }
-  }, [])
-
-  const dotStyle = (anim: Animated.Value) => ({
-    opacity: anim.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] }),
-    transform: [
-      { scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.8, 1] }) },
-      { translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [0, -3] }) },
-    ],
-  })
+  const glowStyle = useMemo(
+    () => ({
+      opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1] }),
+      transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] }) }],
+    }),
+    [pulse],
+  )
 
   return (
     <View style={styles.typingWrapper}>
-      <View style={styles.typingBubble}>
-        <Animated.View style={[styles.typingDot, dotStyle(dot1)]} />
-        <Animated.View style={[styles.typingDot, dotStyle(dot2)]} />
-        <Animated.View style={[styles.typingDot, dotStyle(dot3)]} />
-      </View>
+      <Animated.View style={[styles.typingOrb, glowStyle]} />
     </View>
   )
-}
+})
 
 const CodeBlock = memo(function CodeBlock({ content, language }: { content: string; language?: string }) {
   const [copied, setCopied] = useState(false)
@@ -146,7 +144,7 @@ const CodeBlock = memo(function CodeBlock({ content, language }: { content: stri
         </TouchableOpacity>
       </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.codeBlockScroll}>
-        <Text style={styles.codeBlockText}>{content}</Text>
+        <Text style={styles.codeBlockText} selectable>{content}</Text>
       </ScrollView>
     </View>
   )
@@ -157,7 +155,7 @@ const markdownStyles = StyleSheet.create({
     color: "#ffffff",
     fontSize: 16,
     lineHeight: 24,
-    fontFamily: Platform.OS === "ios" ? "System" : "Roboto",
+    fontFamily: "IBMPlexMono-Regular",
   },
   paragraph: {
     marginTop: 0,
@@ -228,7 +226,7 @@ const markdownStyles = StyleSheet.create({
   code_inline: {
     backgroundColor: "#1A1A1A",
     color: "#E06C75",
-    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    fontFamily: "IBMPlexMono-Regular",
     fontSize: 14,
     paddingHorizontal: 6,
     paddingVertical: 2,
@@ -239,7 +237,7 @@ const markdownStyles = StyleSheet.create({
     borderRadius: 8,
     padding: 12,
     marginVertical: 8,
-    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    fontFamily: "IBMPlexMono-Regular",
     fontSize: 13,
     color: "#ABB2BF",
     overflow: "hidden",
@@ -249,7 +247,7 @@ const markdownStyles = StyleSheet.create({
     borderRadius: 8,
     padding: 12,
     marginVertical: 8,
-    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    fontFamily: "IBMPlexMono-Regular",
     fontSize: 13,
     color: "#ABB2BF",
   },
@@ -314,17 +312,47 @@ const markdownRules = {
     const content = node.content || ""
     return <CodeBlock key={node.key} content={content.trim()} />
   },
+  text: (node: any, children: any, parent: any, styles: any) => {
+    return (
+      <Text key={node.key} style={styles.body} selectable>
+        {node.content}
+      </Text>
+    )
+  },
+  textgroup: (node: any, children: any, parent: any, styles: any) => {
+    return (
+      <Text key={node.key} style={styles.body} selectable>
+        {children}
+      </Text>
+    )
+  },
+  strong: (node: any, children: any, parent: any, styles: any) => (
+    <Text key={node.key} style={styles.strong} selectable>
+      {children}
+    </Text>
+  ),
+  em: (node: any, children: any, parent: any, styles: any) => (
+    <Text key={node.key} style={styles.em} selectable>
+      {children}
+    </Text>
+  ),
+  paragraph: (node: any, children: any, parent: any, styles: any) => (
+    <View key={node.key} style={styles._VIEW_SAFE_paragraph}>
+      <Text style={styles.body} selectable>{children}</Text>
+    </View>
+  ),
 }
 
-function MarkdownContent({ content }: { content: string }) {
+const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
   return (
-    <Markdown style={markdownStyles} rules={markdownRules}>
+    <Markdown style={markdownStyles} rules={markdownRules} mergeStyle>
       {content}
     </Markdown>
   )
-}
+})
 
 interface TerminalScreenProps {
+  sessionId: string
   onRetryMessage?: (message: Message) => void
   onRefresh?: () => Promise<void>
   isRefreshing?: boolean
@@ -332,14 +360,14 @@ interface TerminalScreenProps {
 
 const SCROLL_THRESHOLD = 100
 
-export function TerminalScreen({ onRetryMessage, onRefresh, isRefreshing = false }: TerminalScreenProps) {
+export function TerminalScreen({ sessionId, onRetryMessage, onRefresh, isRefreshing = false }: TerminalScreenProps) {
   const messages = useSessionStore((state) => state.messages)
   const isWaiting = useSessionStore((state) => state.isWaitingForResponse)
   const thinkingText = useSessionStore((state) => state.thinkingText)
   const listRef = useRef<FlatList<Message>>(null)
   const isNearBottom = useRef(true)
   const isUserScrolling = useRef(false)
-  const lastContentHeight = useRef(0)
+  const shouldScrollOnNextLayout = useRef(true)
   const [showScrollButton, setShowScrollButton] = useState(false)
 
   const visibleMessages = useMemo(() => messages.filter((m) => m.content && m.content.trim().length > 0), [messages])
@@ -365,23 +393,52 @@ export function TerminalScreen({ onRetryMessage, onRefresh, isRefreshing = false
     isUserScrolling.current = false
   }, [])
 
+  const contentHeight = useRef(0)
+
   const handleContentSizeChange = useCallback((_width: number, height: number) => {
-    const heightIncreased = height > lastContentHeight.current
-    lastContentHeight.current = height
-    
-    if (heightIncreased && isNearBottom.current && !isUserScrolling.current) {
-      listRef.current?.scrollToEnd({ animated: false })
+    contentHeight.current = height
+
+    if (height > 0 && shouldScrollOnNextLayout.current) {
+      shouldScrollOnNextLayout.current = false
+      listRef.current?.scrollToOffset({ offset: height, animated: false })
+      return
+    }
+
+    if (isNearBottom.current && !isUserScrolling.current) {
+      listRef.current?.scrollToOffset({ offset: height, animated: false })
     }
   }, [])
 
   const scrollToBottom = useCallback(() => {
     isNearBottom.current = true
     setShowScrollButton(false)
-    listRef.current?.scrollToEnd({ animated: false })
+    if (contentHeight.current > 0) {
+      listRef.current?.scrollToOffset({ offset: contentHeight.current, animated: false })
+    }
     setTimeout(() => {
-      listRef.current?.scrollToEnd({ animated: false })
+      if (contentHeight.current > 0) {
+        listRef.current?.scrollToOffset({ offset: contentHeight.current, animated: false })
+      }
     }, 50)
   }, [])
+
+  const prevSessionId = useRef(sessionId)
+  const prevMessageCount = useRef(0)
+
+  useEffect(() => {
+    const sessionChanged = prevSessionId.current !== sessionId
+    const messagesLoaded = prevMessageCount.current === 0 && visibleMessages.length > 0
+
+    if (sessionChanged || messagesLoaded) {
+      shouldScrollOnNextLayout.current = true
+      isNearBottom.current = true
+      isUserScrolling.current = false
+      setShowScrollButton(false)
+    }
+
+    prevSessionId.current = sessionId
+    prevMessageCount.current = visibleMessages.length
+  }, [sessionId, visibleMessages.length])
 
   const footer = useMemo(() => {
     if (thinkingText) return <ThinkingIndicator text={thinkingText} />
@@ -415,10 +472,10 @@ export function TerminalScreen({ onRetryMessage, onRefresh, isRefreshing = false
         keyExtractor={keyExtractor}
         renderItem={renderItem}
         ListFooterComponent={footer}
-        initialNumToRender={50}
-        maxToRenderPerBatch={20}
-        windowSize={21}
-        removeClippedSubviews={false}
+        initialNumToRender={15}
+        maxToRenderPerBatch={5}
+        windowSize={11}
+        removeClippedSubviews={true}
         refreshControl={refreshControl}
         onScroll={handleScroll}
         onScrollBeginDrag={handleScrollBeginDrag}
@@ -479,7 +536,7 @@ export const MessageBubble = memo(
         {isUser ? (
           <View style={styles.userMessageWrapper}>
             <View style={[styles.messageContainer, styles.userMessage, isFailed && styles.failedMessage]}>
-              <Text style={[styles.messageText, styles.userMessageText]}>{message.content}</Text>
+              <SelectableText text={message.content} style={[styles.messageText, styles.userMessageText]} />
             </View>
             {isFailed && (
               <TouchableOpacity style={styles.retryRow} onPress={handleRetry}>
@@ -598,14 +655,23 @@ const styles = StyleSheet.create({
   messageText: {
     fontSize: 16,
     lineHeight: 24,
-    fontFamily: Platform.OS === "ios" ? "System" : "Roboto",
+    fontFamily: "IBMPlexMono-Regular",
   },
   userMessageText: {
     color: "#ffffff",
   },
   assistantMessageText: {
     color: "#ffffff",
+    fontSize: 16,
+    lineHeight: 24,
+    fontFamily: "IBMPlexMono-Regular",
     flex: 1,
+  },
+  selectableTextInput: {
+    padding: 0,
+    margin: 0,
+    borderWidth: 0,
+    backgroundColor: "transparent",
   },
   thinkingWrapper: {
     paddingHorizontal: 16,
@@ -642,24 +708,14 @@ const styles = StyleSheet.create({
   },
   typingWrapper: {
     paddingHorizontal: 16,
-    paddingBottom: 8,
+    paddingVertical: 12,
     marginLeft: 12,
   },
-  typingBubble: {
-    flexDirection: "row",
-    backgroundColor: "#1A1A1A",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 16,
-    alignSelf: "flex-start",
-    gap: 5,
-    alignItems: "center",
-  },
-  typingDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: "#3B82F6",
+  typingOrb: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#FFFFFF",
   },
   codeBlockContainer: {
     backgroundColor: "#0D0D0D",
@@ -696,7 +752,7 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   codeBlockText: {
-    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    fontFamily: "IBMPlexMono-Regular",
     fontSize: 13,
     color: "#ABB2BF",
     lineHeight: 20,

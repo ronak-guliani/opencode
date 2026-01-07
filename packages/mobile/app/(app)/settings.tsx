@@ -1,5 +1,6 @@
 import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
+import { useRouter } from "expo-router"
 import { useServerStore, saveServerConfig } from "@/store/server"
 import { useAuthStore } from "@/store/auth"
 import * as SecureStore from "expo-secure-store"
@@ -14,6 +15,7 @@ const AUTH_TIMEOUT = 10000
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets()
+  const router = useRouter()
   const { baseUrl, setBaseUrl, directory, setDirectory } = useServerStore()
   const { setAuthenticated } = useAuthStore()
   const [localUrl, setLocalUrl] = useState(baseUrl)
@@ -80,6 +82,13 @@ export default function SettingsScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
+      <View style={styles.header}>
+        <TouchableOpacity style={styles.backButton} onPress={() => router.back()} activeOpacity={0.7}>
+          <Text style={styles.backIcon}>←</Text>
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Settings</Text>
+        <View style={styles.headerSpacer} />
+      </View>
       <ScrollView style={styles.scrollView}>
         <Text style={styles.sectionTitle}>Server Connection</Text>
 
@@ -177,13 +186,42 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#000000",
   },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1A1A1A",
+  },
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#1A1A1A",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  backIcon: {
+    fontSize: 20,
+    color: "#FFFFFF",
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontFamily: "IBMPlexMono-SemiBold",
+    color: "#FFFFFF",
+  },
+  headerSpacer: {
+    width: 40,
+  },
   scrollView: {
     flex: 1,
     paddingHorizontal: 16,
   },
   sectionTitle: {
     fontSize: 20,
-    fontWeight: "bold",
+    fontFamily: "IBMPlexMono-Bold",
     color: "#ffffff",
     marginTop: 24,
     marginBottom: 16,
@@ -192,6 +230,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#888888",
     marginBottom: 16,
+    fontFamily: "IBMPlexMono-Regular",
   },
   section: {
     marginBottom: 16,
@@ -200,6 +239,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#ffffff",
     marginBottom: 8,
+    fontFamily: "IBMPlexMono-Medium",
   },
   input: {
     backgroundColor: "#1A1A1A",
@@ -209,6 +249,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#333333",
+    fontFamily: "IBMPlexMono-Regular",
   },
   button: {
     backgroundColor: "#3B82F6",
@@ -226,7 +267,7 @@ const styles = StyleSheet.create({
   buttonText: {
     color: "#ffffff",
     fontSize: 16,
-    fontWeight: "600",
+    fontFamily: "IBMPlexMono-SemiBold",
   },
   errorContainer: {
     backgroundColor: "rgba(239, 68, 68, 0.1)",
@@ -237,6 +278,7 @@ const styles = StyleSheet.create({
   errorText: {
     color: "#ef4444",
     fontSize: 14,
+    fontFamily: "IBMPlexMono-Regular",
   },
   divider: {
     height: 1,
@@ -254,6 +296,6 @@ const styles = StyleSheet.create({
   logoutButtonText: {
     color: "#ef4444",
     fontSize: 16,
-    fontWeight: "600",
+    fontFamily: "IBMPlexMono-SemiBold",
   },
 })

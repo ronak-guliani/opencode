@@ -1,27 +1,24 @@
-import { useMemo, useCallback, useRef, useEffect, useState } from "react"
+import { useMemo, useCallback, useRef, useState } from "react"
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   Alert,
-  ScrollView,
-  Dimensions,
+  SectionList,
   Animated,
-  Pressable,
   PanResponder,
   TextInput,
   RefreshControl,
+  useWindowDimensions,
+  type GestureResponderHandlers,
 } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import type { Session } from "@/store/session"
 
-const SCREEN_WIDTH = Dimensions.get("window").width
-const DRAWER_WIDTH = SCREEN_WIDTH * 0.7
+const DRAWER_WIDTH_RATIO = 0.75
 
 interface ChatDrawerProps {
-  visible: boolean
-  onClose: () => void
   sessions: Session[]
   currentSessionId: string | null
   onSelectSession: (id: string) => void
@@ -29,12 +26,12 @@ interface ChatDrawerProps {
   onDeleteSession: (id: string) => void
   onRefresh?: () => Promise<void>
   isRefreshing?: boolean
-  translateX: Animated.Value
+  onSettingsPress?: () => void
+  drawerProgress: Animated.Value
+  onCloseDrawer: () => void
 }
 
 export const ChatDrawer = ({
-  visible,
-  onClose,
   sessions,
   currentSessionId,
   onSelectSession,
@@ -42,11 +39,23 @@ export const ChatDrawer = ({
   onDeleteSession,
   onRefresh,
   isRefreshing = false,
-  translateX,
+  onSettingsPress,
+  drawerProgress,
+  onCloseDrawer,
 }: ChatDrawerProps) => {
   const insets = useSafeAreaInsets()
-  const startX = useRef(0)
+  const { width: screenWidth } = useWindowDimensions()
+  const drawerWidth = screenWidth * DRAWER_WIDTH_RATIO
+  const startProgress = useRef(0)
   const [searchQuery, setSearchQuery] = useState("")
+
+  // Use refs to avoid stale closure in PanResponder
+  const drawerProgressRef = useRef(drawerProgress)
+  const onCloseDrawerRef = useRef(onCloseDrawer)
+  const drawerWidthRef = useRef(drawerWidth)
+  drawerProgressRef.current = drawerProgress
+  onCloseDrawerRef.current = onCloseDrawer
+  drawerWidthRef.current = drawerWidth
 
   const filteredSessions = useMemo(() => {
     if (!searchQuery.trim()) return sessions
@@ -57,63 +66,34 @@ export const ChatDrawer = ({
     })
   }, [sessions, searchQuery])
 
-  const backdropOpacity = translateX.interpolate({
-    inputRange: [-DRAWER_WIDTH, 0],
-    outputRange: [0, 0.5],
-    extrapolate: "clamp",
-  })
-
-  const closeDrawer = useCallback(() => {
-    Animated.timing(translateX, {
-      toValue: -DRAWER_WIDTH,
-      duration: 250,
-      useNativeDriver: true,
-    }).start(() => {
-      onClose()
-    })
-  }, [translateX, onClose])
-
-  const openDrawer = useCallback(() => {
-    Animated.timing(translateX, {
-      toValue: 0,
-      duration: 250,
-      useNativeDriver: true,
-    }).start()
-  }, [translateX])
-
-  const drawerPanResponder = useRef(
-    PanResponder.create({
+  const panHandlers = useMemo<GestureResponderHandlers>(() => {
+    return PanResponder.create({
       onStartShouldSetPanResponder: () => false,
       onMoveShouldSetPanResponder: (_, gesture) => {
         return gesture.dx < -10 && Math.abs(gesture.dy) < Math.abs(gesture.dx)
       },
       onPanResponderGrant: () => {
         // @ts-ignore - _value exists at runtime
-        startX.current = translateX._value
+        startProgress.current = drawerProgressRef.current._value
       },
       onPanResponderMove: (_, gesture) => {
-        const x = Math.max(-DRAWER_WIDTH, Math.min(0, startX.current + gesture.dx))
-        translateX.setValue(x)
+        const progress = Math.max(0, Math.min(1, startProgress.current + gesture.dx / drawerWidthRef.current))
+        drawerProgressRef.current.setValue(progress)
       },
       onPanResponderRelease: (_, gesture) => {
         if (gesture.dx < -50 || gesture.vx < -0.5) {
-          closeDrawer()
+          onCloseDrawerRef.current()
         } else {
-          openDrawer()
+          Animated.spring(drawerProgressRef.current, {
+            toValue: 1,
+            useNativeDriver: true,
+            tension: 300,
+            friction: 30,
+          }).start()
         }
       },
-    }),
-  ).current
-
-  useEffect(() => {
-    if (visible) {
-      Animated.timing(translateX, {
-        toValue: 0,
-        duration: 250,
-        useNativeDriver: true,
-      }).start()
-    }
-  }, [visible, translateX])
+    }).panHandlers
+  }, [])
 
   const groupedSessions = useMemo(() => {
     const groups: { [key: string]: Session[] } = {
@@ -169,151 +149,128 @@ export const ChatDrawer = ({
     [onDeleteSession],
   )
 
-  const isInteractive = visible
+  const handleSelectSession = useCallback(
+    (sessionId: string) => {
+      onSelectSession(sessionId)
+      onCloseDrawer()
+    },
+    [onSelectSession, onCloseDrawer],
+  )
+
+  const handleNewChat = useCallback(() => {
+    onNewChat()
+    onCloseDrawer()
+  }, [onNewChat, onCloseDrawer])
+
+  const handleSettingsPress = useCallback(() => {
+    onCloseDrawer()
+    setTimeout(() => onSettingsPress?.(), 200)
+  }, [onSettingsPress, onCloseDrawer])
 
   return (
-    <View style={[StyleSheet.absoluteFill, styles.container]} pointerEvents={isInteractive ? "auto" : "none"}>
-      <Animated.View
-        style={[styles.backdrop, { opacity: backdropOpacity }]}
-        pointerEvents={isInteractive ? "auto" : "none"}
-      >
-        <Pressable style={StyleSheet.absoluteFill} onPress={closeDrawer} />
-      </Animated.View>
+    <View style={[styles.drawer, { width: drawerWidth, paddingTop: insets.top }]} {...panHandlers}>
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Chats</Text>
+        <TouchableOpacity style={styles.newChatButton} onPress={handleNewChat}>
+          <Text style={styles.newChatIcon}>+</Text>
+        </TouchableOpacity>
+      </View>
 
-      <Animated.View
-        style={[styles.drawer, { width: DRAWER_WIDTH, paddingTop: insets.top, transform: [{ translateX }] }]}
-        {...drawerPanResponder.panHandlers}
-      >
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Chats</Text>
-          <TouchableOpacity
-            style={styles.newChatButton}
-            onPress={() => {
-              onNewChat()
-              closeDrawer()
-            }}
-          >
-            <Text style={styles.newChatIcon}>+</Text>
+      <View style={styles.searchContainer}>
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search chats..."
+          placeholderTextColor="#666666"
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity style={styles.clearButton} onPress={() => setSearchQuery("")}>
+            <Text style={styles.clearButtonText}>×</Text>
           </TouchableOpacity>
-        </View>
+        )}
+      </View>
 
-        <View style={styles.searchContainer}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search chats..."
-            placeholderTextColor="#666666"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity style={styles.clearButton} onPress={() => setSearchQuery("")}>
-              <Text style={styles.clearButtonText}>×</Text>
+      <SectionList
+        sections={Object.entries(groupedSessions)
+          .filter(([_, data]) => data.length > 0)
+          .map(([title, data]) => ({ title, data }))}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item: session }) => {
+          const isSelected = session.id === currentSessionId
+          return (
+            <TouchableOpacity
+              style={[styles.sessionItem, isSelected && styles.selectedSessionItem]}
+              onPress={() => handleSelectSession(session.id)}
+            >
+              <Text style={[styles.sessionTitle, isSelected && styles.selectedSessionTitle]} numberOfLines={1}>
+                {session.title || "New Chat"}
+              </Text>
+
+              <TouchableOpacity
+                style={styles.moreButton}
+                onPress={() => handleDeletePress(session.id, session.title || "New Chat")}
+              >
+                <Text style={[styles.moreButtonText, isSelected && styles.selectedMoreButtonText]}>⋯</Text>
+              </TouchableOpacity>
             </TouchableOpacity>
-          )}
-        </View>
-
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            onRefresh ? (
-              <RefreshControl
-                refreshing={isRefreshing}
-                onRefresh={onRefresh}
-                tintColor="#3B82F6"
-                colors={["#3B82F6"]}
-                progressBackgroundColor="#1A1A1A"
-              />
-            ) : undefined
-          }
-        >
-          {Object.entries(groupedSessions).map(([group, groupSessions]) => {
-            if (groupSessions.length === 0) return null
-
-            return (
-              <View key={group} style={styles.groupContainer}>
-                <Text style={styles.groupTitle}>{group}</Text>
-                {groupSessions.map((session) => {
-                  const isSelected = session.id === currentSessionId
-                  return (
-                    <TouchableOpacity
-                      key={session.id}
-                      style={[styles.sessionItem, isSelected && styles.selectedSessionItem]}
-                      onPress={() => {
-                        onSelectSession(session.id)
-                        closeDrawer()
-                      }}
-                    >
-                      <Text style={[styles.sessionTitle, isSelected && styles.selectedSessionTitle]} numberOfLines={1}>
-                        {session.title || "New Chat"}
-                      </Text>
-
-                      <TouchableOpacity
-                        style={styles.moreButton}
-                        onPress={() => handleDeletePress(session.id, session.title)}
-                      >
-                        <Text style={[styles.moreButtonText, isSelected && styles.selectedMoreButtonText]}>⋯</Text>
-                      </TouchableOpacity>
-                    </TouchableOpacity>
-                  )
-                })}
-              </View>
-            )
-          })}
-
-          {sessions.length === 0 && (
+          )
+        }}
+        renderSectionHeader={({ section: { title } }) => (
+          <Text style={styles.groupTitle}>{title}</Text>
+        )}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          onRefresh ? (
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={onRefresh}
+              tintColor="#3B82F6"
+              colors={["#3B82F6"]}
+              progressBackgroundColor="#1A1A1A"
+            />
+          ) : undefined
+        }
+        ListEmptyComponent={
+          sessions.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateText}>No conversations yet.</Text>
-              <TouchableOpacity
-                style={styles.startChatButton}
-                onPress={() => {
-                  onNewChat()
-                  closeDrawer()
-                }}
-              >
+              <TouchableOpacity style={styles.startChatButton} onPress={handleNewChat}>
                 <Text style={styles.startChatText}>Start a new chat</Text>
               </TouchableOpacity>
             </View>
-          )}
-
-          {sessions.length > 0 && filteredSessions.length === 0 && searchQuery.trim() && (
+          ) : sessions.length > 0 && filteredSessions.length === 0 && searchQuery.trim() ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateText}>No chats match "{searchQuery}"</Text>
             </View>
-          )}
-        </ScrollView>
+          ) : null
+        }
+        stickySectionHeadersEnabled={false}
+      />
 
-        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+        <TouchableOpacity style={styles.userButton} onPress={handleSettingsPress} activeOpacity={0.7}>
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>👤</Text>
           </View>
-          <Text style={styles.username}>User</Text>
-        </View>
-      </Animated.View>
+          <Text style={styles.username}>Settings</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   )
 }
 
-export const CHAT_DRAWER_WIDTH = DRAWER_WIDTH
+export const getDrawerWidth = (screenWidth: number) => screenWidth * DRAWER_WIDTH_RATIO
 
 const styles = StyleSheet.create({
-  container: {
-    zIndex: 1000,
-  },
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#000000",
-  },
   drawer: {
     backgroundColor: "#0A0A0A",
     height: "100%",
     borderRightWidth: 1,
     borderRightColor: "#1A1A1A",
-    position: "absolute",
-    left: 0,
-    top: 0,
   },
   header: {
     flexDirection: "row",
@@ -327,7 +284,7 @@ const styles = StyleSheet.create({
   headerTitle: {
     color: "#FFFFFF",
     fontSize: 20,
-    fontWeight: "700",
+    fontFamily: "IBMPlexMono-Medium",
   },
   newChatButton: {
     width: 32,
@@ -340,7 +297,7 @@ const styles = StyleSheet.create({
   newChatIcon: {
     fontSize: 20,
     color: "#FFFFFF",
-    fontWeight: "300",
+    fontFamily: "IBMPlexMono-Regular",
   },
   searchContainer: {
     paddingHorizontal: 16,
@@ -355,6 +312,7 @@ const styles = StyleSheet.create({
     paddingRight: 36,
     color: "#FFFFFF",
     fontSize: 14,
+    fontFamily: "IBMPlexMono-Regular",
   },
   clearButton: {
     position: "absolute",
@@ -367,7 +325,7 @@ const styles = StyleSheet.create({
   clearButtonText: {
     color: "#666666",
     fontSize: 20,
-    fontWeight: "300",
+    fontFamily: "IBMPlexMono-Regular",
   },
   scrollContent: {
     paddingVertical: 8,
@@ -379,7 +337,7 @@ const styles = StyleSheet.create({
   groupTitle: {
     color: "#666666",
     fontSize: 11,
-    fontWeight: "600",
+    fontFamily: "IBMPlexMono-Medium",
     marginLeft: 16,
     marginBottom: 8,
     textTransform: "uppercase",
@@ -402,10 +360,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     flex: 1,
     marginRight: 8,
+    fontFamily: "IBMPlexMono-Regular",
   },
   selectedSessionTitle: {
     color: "#FFFFFF",
-    fontWeight: "500",
+    fontFamily: "IBMPlexMono-Medium",
   },
   moreButton: {
     padding: 4,
@@ -413,7 +372,7 @@ const styles = StyleSheet.create({
   moreButtonText: {
     color: "#666666",
     fontSize: 16,
-    fontWeight: "bold",
+    fontFamily: "IBMPlexMono-Bold",
   },
   selectedMoreButtonText: {
     color: "#888888",
@@ -430,6 +389,11 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
   },
+  userButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
   avatar: {
     width: 32,
     height: 32,
@@ -445,7 +409,7 @@ const styles = StyleSheet.create({
   username: {
     color: "#FFFFFF",
     fontSize: 15,
-    fontWeight: "500",
+    fontFamily: "IBMPlexMono-Medium",
   },
   emptyState: {
     padding: 24,
@@ -457,6 +421,7 @@ const styles = StyleSheet.create({
     color: "#666666",
     fontSize: 15,
     marginBottom: 16,
+    fontFamily: "IBMPlexMono-Regular",
   },
   startChatButton: {
     backgroundColor: "#1A1A1A",
@@ -467,5 +432,6 @@ const styles = StyleSheet.create({
   startChatText: {
     color: "#E5E5E5",
     fontSize: 14,
+    fontFamily: "IBMPlexMono-Medium",
   },
 })

@@ -26,7 +26,7 @@ function TabBar() {
 
 export default function AppLayout() {
   const pathname = usePathname()
-  const hideTabBar = pathname.includes("/session/")
+  const showTabBar = pathname === "/" || pathname === "/index"
 
   return (
     <View style={styles.container}>
@@ -36,7 +36,13 @@ export default function AppLayout() {
         }}
       >
         <Stack.Screen name="index" />
-        <Stack.Screen name="settings" />
+        <Stack.Screen
+          name="settings"
+          options={{
+            animation: "slide_from_right",
+            gestureEnabled: true,
+          }}
+        />
         <Stack.Screen
           name="session/[id]"
           options={{
@@ -45,7 +51,7 @@ export default function AppLayout() {
           }}
         />
       </Stack>
-      {!hideTabBar && <TabBar />}
+      {showTabBar && <TabBar />}
     </View>
   )
 }

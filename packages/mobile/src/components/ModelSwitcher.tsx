@@ -250,7 +250,7 @@ const styles = StyleSheet.create({
   triggerText: {
     color: "#e6edf3",
     fontSize: 13,
-    fontWeight: "500",
+    fontFamily: "IBMPlexMono-Medium",
     maxWidth: 120,
   },
   chevron: {
@@ -289,6 +289,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 8,
+    fontFamily: "IBMPlexMono-Regular",
   },
   list: {
     maxHeight: 400,
@@ -312,7 +313,7 @@ const styles = StyleSheet.create({
   groupTitle: {
     color: "#666",
     fontSize: 12,
-    fontWeight: "600",
+    fontFamily: "IBMPlexMono-SemiBold",
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
@@ -331,21 +332,23 @@ const styles = StyleSheet.create({
   optionText: {
     color: "#ccc",
     fontSize: 15,
+    fontFamily: "IBMPlexMono-Regular",
   },
   optionTextSelected: {
     color: "#fff",
-    fontWeight: "600",
+    fontFamily: "IBMPlexMono-SemiBold",
   },
   checkIcon: {
     color: "#3B82F6",
     fontSize: 16,
-    fontWeight: "bold",
+    fontFamily: "IBMPlexMono-Bold",
   },
   emptyText: {
     color: "#666",
     textAlign: "center",
     marginTop: 40,
     fontSize: 15,
+    fontFamily: "IBMPlexMono-Regular",
   },
   optionRight: {
     flexDirection: "row",

@@ -30,13 +30,14 @@ const styles = StyleSheet.create({
   },
   greeting: {
     fontSize: 32,
-    fontWeight: "bold",
+    fontFamily: "IBMPlexMono-Bold",
     color: "#FFFFFF",
     marginBottom: 8,
     textAlign: "center",
   },
   subtitle: {
     fontSize: 16,
+    fontFamily: "IBMPlexMono-Regular",
     color: "#888888",
     marginBottom: 40,
     textAlign: "center",

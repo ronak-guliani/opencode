@@ -3,16 +3,27 @@ import { View, ActivityIndicator, StyleSheet } from "react-native"
 import { Slot } from "expo-router"
 import { GestureHandlerRootView } from "react-native-gesture-handler"
 import { SafeAreaProvider } from "react-native-safe-area-context"
+import * as Font from "expo-font"
 import { loadServerConfig } from "@/store/server"
 import { initializeAuth } from "@/store/auth"
 import { ToastContainer } from "@/components/Toast"
+import { KeyboardControllerProvider } from "@/components/KeyboardController"
 
 export default function RootLayout() {
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
     async function init() {
-      await Promise.all([loadServerConfig(), initializeAuth()])
+      await Promise.all([
+        loadServerConfig(),
+        initializeAuth(),
+        Font.loadAsync({
+          "IBMPlexMono-Regular": require("../assets/fonts/IBMPlexMono-Regular.ttf"),
+          "IBMPlexMono-Medium": require("../assets/fonts/IBMPlexMono-Medium.ttf"),
+          "IBMPlexMono-SemiBold": require("../assets/fonts/IBMPlexMono-SemiBold.ttf"),
+          "IBMPlexMono-Bold": require("../assets/fonts/IBMPlexMono-Bold.ttf"),
+        }),
+      ])
       setReady(true)
     }
     init()
@@ -27,12 +38,14 @@ export default function RootLayout() {
   }
 
   return (
-    <GestureHandlerRootView style={styles.flex}>
-      <SafeAreaProvider>
-        <Slot />
-        <ToastContainer />
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+    <KeyboardControllerProvider>
+      <GestureHandlerRootView style={styles.flex}>
+        <SafeAreaProvider>
+          <Slot />
+          <ToastContainer />
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    </KeyboardControllerProvider>
   )
 }
 

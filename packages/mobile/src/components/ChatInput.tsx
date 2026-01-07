@@ -96,6 +96,7 @@ const styles = StyleSheet.create({
     maxHeight: 100,
     paddingTop: 0,
     paddingBottom: 0,
+    fontFamily: "IBMPlexMono-Regular",
   },
   bottomRow: {
     flexDirection: "row",
