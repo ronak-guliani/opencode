@@ -2,8 +2,6 @@ import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet } from 
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
 import { useServerStore, saveServerConfig } from "@/store/server"
-import { useAuthStore } from "@/store/auth"
-import * as SecureStore from "expo-secure-store"
 import { useState } from "react"
 
 type AuthInput = {
@@ -17,7 +15,6 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets()
   const router = useRouter()
   const { baseUrl, setBaseUrl, directory, setDirectory } = useServerStore()
-  const { setAuthenticated } = useAuthStore()
   const [localUrl, setLocalUrl] = useState(baseUrl)
   const [localDir, setLocalDir] = useState(directory)
   const [authInputs, setAuthInputs] = useState<AuthInput>({ providerId: "", apiKey: "" })
@@ -32,11 +29,6 @@ export default function SettingsScreen() {
     setDirectory(localDir)
     setIsSaved(true)
     setTimeout(() => setIsSaved(false), 2000)
-  }
-
-  const handleLogout = async () => {
-    await SecureStore.deleteItemAsync("github_token")
-    setAuthenticated(false)
   }
 
   const handleSaveProviderAuth = async () => {
@@ -98,11 +90,13 @@ export default function SettingsScreen() {
             style={styles.input}
             value={localUrl}
             onChangeText={setLocalUrl}
-            placeholder="http://localhost:4096"
+            placeholder="http://192.168.1.174:4096"
+            placeholderTextColor="#666666"
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="url"
           />
+          <Text style={styles.hint}>Get this URL from the OpenCode menu bar app</Text>
         </View>
 
         <View style={styles.section}>
@@ -112,6 +106,7 @@ export default function SettingsScreen() {
             value={localDir}
             onChangeText={setLocalDir}
             placeholder="/path/to/project"
+            placeholderTextColor="#666666"
             autoCapitalize="none"
             autoCorrect={false}
           />
@@ -128,15 +123,16 @@ export default function SettingsScreen() {
         <View style={styles.divider} />
 
         <Text style={styles.sectionTitle}>Provider Authentication</Text>
-        <Text style={styles.hint}>Configure API keys for your AI providers. Keys are stored securely on device.</Text>
+        <Text style={styles.hint}>Configure API keys for your AI providers. Keys are stored securely on the server.</Text>
 
         <View style={styles.section}>
-          <Text style={styles.label}>Provider ID (e.g., anthropic, openai)</Text>
+          <Text style={styles.label}>Provider ID</Text>
           <TextInput
             style={styles.input}
             value={authInputs.providerId}
             onChangeText={(text) => setAuthInputs({ ...authInputs, providerId: text })}
-            placeholder="anthropic"
+            placeholder="anthropic, openai, etc."
+            placeholderTextColor="#666666"
             autoCapitalize="none"
             autoCorrect={false}
           />
@@ -149,6 +145,7 @@ export default function SettingsScreen() {
             value={authInputs.apiKey}
             onChangeText={(text) => setAuthInputs({ ...authInputs, apiKey: text })}
             placeholder="sk-ant-..."
+            placeholderTextColor="#666666"
             autoCapitalize="none"
             autoCorrect={false}
             secureTextEntry
@@ -169,13 +166,7 @@ export default function SettingsScreen() {
           <Text style={styles.buttonText}>{isSaving ? "Saving..." : isSaved ? "Saved!" : "Save API Key"}</Text>
         </TouchableOpacity>
 
-        <View style={styles.divider} />
-
-        <Text style={styles.sectionTitle}>GitHub Account</Text>
-
-        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-          <Text style={styles.logoutButtonText}>Log Out</Text>
-        </TouchableOpacity>
+        <View style={{ height: 40 }} />
       </ScrollView>
     </View>
   )
@@ -227,9 +218,9 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   hint: {
-    fontSize: 14,
-    color: "#888888",
-    marginBottom: 16,
+    fontSize: 13,
+    color: "#666666",
+    marginTop: 6,
     fontFamily: "IBMPlexMono-Regular",
   },
   section: {
@@ -284,18 +275,5 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: "#1A1A1A",
     marginVertical: 24,
-  },
-  logoutButton: {
-    backgroundColor: "#1A1A1A",
-    padding: 16,
-    borderRadius: 24,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#ef4444",
-  },
-  logoutButtonText: {
-    color: "#ef4444",
-    fontSize: 16,
-    fontFamily: "IBMPlexMono-SemiBold",
   },
 })

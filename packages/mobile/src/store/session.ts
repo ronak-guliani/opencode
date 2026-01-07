@@ -20,6 +20,8 @@ export type Message = {
   time: number
   isComplete?: boolean
   status?: MessageStatus
+  modelID?: string
+  providerID?: string
 }
 
 type SessionState = {
@@ -45,6 +47,7 @@ type SessionState = {
   cacheMessages: (sessionId: string, messages: Message[]) => void
   getCachedMessages: (sessionId: string) => Message[] | undefined
   prefetchSession: (sessionId: string) => void
+  getLastModel: () => { providerID: string; modelID: string } | null
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -100,7 +103,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   markMessageComplete: (id) => {
     set((state) => ({
-      messages: state.messages.map((m) => (m.id === id ? { ...m, isComplete: true, status: "sent" as MessageStatus } : m)),
+      messages: state.messages.map((m) =>
+        m.id === id ? { ...m, isComplete: true, status: "sent" as MessageStatus } : m,
+      ),
     }))
   },
 
@@ -147,5 +152,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (cached) {
       set({ messages: cached })
     }
+  },
+
+  getLastModel: () => {
+    const messages = get().messages
+    if (messages.length === 0) return null
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
+      if (msg.modelID && msg.providerID) {
+        return {
+          providerID: msg.providerID,
+          modelID: msg.modelID,
+        }
+      }
+    }
+    return null
   },
 }))

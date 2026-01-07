@@ -1,5 +1,13 @@
-import React from "react"
-import { View, TextInput, TouchableOpacity, Text, StyleSheet } from "react-native"
+import React, { useRef } from "react"
+import {
+  View,
+  TextInput,
+  TouchableOpacity,
+  Text,
+  StyleSheet,
+  type NativeSyntheticEvent,
+  type TextInputKeyPressEventData,
+} from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
 interface ChatInputProps {
@@ -24,15 +32,29 @@ export function ChatInput({
   const insets = useSafeAreaInsets()
   const hasText = value.trim().length > 0
   const isSendEnabled = hasText && !disabled
+  const inputRef = useRef<TextInput>(null)
+
+  const handleKeyPress = (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
+    if (event.nativeEvent.key === "Enter") {
+      event.preventDefault()
+      if (hasText) {
+        inputRef.current?.clear()
+        onChangeText("")
+        onSend()
+      }
+    }
+  }
 
   return (
     <View style={styles.container}>
       <View style={[styles.innerContainer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
         <View style={styles.inputWrapper}>
           <TextInput
+            ref={inputRef}
             style={styles.input}
             value={value}
             onChangeText={onChangeText}
+            onKeyPress={handleKeyPress}
             placeholder={placeholder}
             placeholderTextColor="#666"
             multiline

@@ -7,16 +7,16 @@ function TabBar() {
   const pathname = usePathname()
   const insets = useSafeAreaInsets()
 
-  const isChat = pathname === "/" || pathname === "/index"
-  const isSettings = pathname === "/settings"
+  const isSessions = pathname === "/(app)" || pathname === "/(app)/"
+  const isSettings = pathname.includes("/settings")
 
   return (
     <View style={[styles.tabBar, { paddingBottom: insets.bottom || 20 }]}>
-      <TouchableOpacity style={styles.tab} onPress={() => router.push("/")} activeOpacity={0.7}>
-        <Text style={[styles.icon, isChat && styles.activeIcon]}>💬</Text>
-        <Text style={[styles.label, isChat && styles.activeText]}>Chat</Text>
+      <TouchableOpacity style={styles.tab} onPress={() => router.push("/(app)")} activeOpacity={0.7}>
+        <Text style={[styles.icon, isSessions && styles.activeIcon]}>💬</Text>
+        <Text style={[styles.label, isSessions && styles.activeText]}>Sessions</Text>
       </TouchableOpacity>
-      <TouchableOpacity style={styles.tab} onPress={() => router.push("/settings")} activeOpacity={0.7}>
+      <TouchableOpacity style={styles.tab} onPress={() => router.push("/(app)/settings")} activeOpacity={0.7}>
         <Text style={[styles.icon, isSettings && styles.activeIcon]}>⚙️</Text>
         <Text style={[styles.label, isSettings && styles.activeText]}>Settings</Text>
       </TouchableOpacity>
@@ -26,7 +26,7 @@ function TabBar() {
 
 export default function AppLayout() {
   const pathname = usePathname()
-  const showTabBar = pathname === "/" || pathname === "/index"
+  const showTabBar = !pathname.includes("/session/")
 
   return (
     <View style={styles.container}>

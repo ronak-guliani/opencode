@@ -5,7 +5,6 @@ import { GestureHandlerRootView } from "react-native-gesture-handler"
 import { SafeAreaProvider } from "react-native-safe-area-context"
 import * as Font from "expo-font"
 import { loadServerConfig } from "@/store/server"
-import { initializeAuth } from "@/store/auth"
 import { ToastContainer } from "@/components/Toast"
 import { KeyboardControllerProvider } from "@/components/KeyboardController"
 
@@ -16,7 +15,6 @@ export default function RootLayout() {
     async function init() {
       await Promise.all([
         loadServerConfig(),
-        initializeAuth(),
         Font.loadAsync({
           "IBMPlexMono-Regular": require("../assets/fonts/IBMPlexMono-Regular.ttf"),
           "IBMPlexMono-Medium": require("../assets/fonts/IBMPlexMono-Medium.ttf"),

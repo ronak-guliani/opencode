@@ -30,12 +30,14 @@ const sessionActions = {
   clearMessages: useSessionStore.getState().clearMessages,
   getCachedMessages: useSessionStore.getState().getCachedMessages,
   setSessions: useSessionStore.getState().setSessions,
+  getLastModel: useSessionStore.getState().getLastModel,
 }
 
 const providerActions = {
   fetchProviders: useProviderStore.getState().fetchProviders,
   getSelectedModel: useProviderStore.getState().getSelectedModel,
   getModel: useProviderStore.getState().getModel,
+  setSelectedModel: useProviderStore.getState().setSelectedModel,
 }
 
 export default function SessionScreen() {
@@ -196,6 +198,11 @@ export default function SessionScreen() {
       const [session, serverMessages] = await Promise.all([client.getSession(id), client.getMessages(id)])
       sessionActions.setCurrentSession(session)
       sessionActions.setMessages(serverMessages)
+
+      const lastModel = sessionActions.getLastModel()
+      if (lastModel) {
+        providerActions.setSelectedModel(lastModel)
+      }
     } catch (error) {
       showErrorToast("Failed to load session", {
         label: "Retry",
