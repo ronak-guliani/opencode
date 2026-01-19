@@ -16,6 +16,10 @@ import {
 import MarkdownDisplay from "react-native-markdown-display"
 import * as Clipboard from "expo-clipboard"
 import { useSessionStore, type Message } from "@/store/session"
+import Reanimated, { useAnimatedStyle, withTiming } from 'react-native-reanimated'
+import { useNewMessageAnimation } from "@/hooks/useNewMessageAnimation"
+import { useFirstMessageAnimation } from "@/hooks/useFirstMessageAnimation"
+
 
 const Markdown = MarkdownDisplay as any
 
@@ -373,7 +377,9 @@ export function TerminalScreen({ sessionId, onRetryMessage, onRefresh, isRefresh
   const visibleMessages = useMemo(() => messages.filter((m) => m.content && m.content.trim().length > 0), [messages])
 
   const renderItem = useCallback(
-    ({ item }: { item: Message }) => <MessageBubble message={item} onRetry={onRetryMessage} />,
+    ({ item, index }: { item: Message; index: number }) => (
+      <MessageBubble message={item} index={index} onRetry={onRetryMessage} />
+    ),
     [onRetryMessage],
   )
   const keyExtractor = useCallback((item: Message, index: number) => item.id || `msg-${index}`, [])
@@ -483,6 +489,8 @@ export function TerminalScreen({ sessionId, onRetryMessage, onRefresh, isRefresh
         onContentSizeChange={handleContentSizeChange}
         scrollEventThrottle={16}
         maintainVisibleContentPosition={null}
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
       />
       {showScrollButton && (
         <TouchableOpacity style={styles.scrollButton} onPress={scrollToBottom} activeOpacity={0.8}>
@@ -493,28 +501,61 @@ export function TerminalScreen({ sessionId, onRetryMessage, onRefresh, isRefresh
   )
 }
 
+interface MessageBubbleProps {
+  message: Message
+  index: number
+  onRetry?: (message: Message) => void
+}
+
 export const MessageBubble = memo(
-  function MessageBubble({ message, onRetry }: { message: Message; onRetry?: (message: Message) => void }) {
+  function MessageBubble({ message, index, onRetry }: MessageBubbleProps) {
     const isUser = message.role === "user"
     const isFailed = message.status === "failed"
     const isSending = message.status === "sending"
+    
+    const isFirstUserMessage = index === 0 && isUser
+    const isFirstAssistantMessage = index === 1 && !isUser
+    
+    const { isMessageSendAnimating, keyboardHeight } = useNewMessageAnimation()
+    
+    const {
+      animatedStyle: firstMessageStyle,
+      onLayout,
+      didUserMessageAnimate,
+    } = useFirstMessageAnimation({
+      disabled: !isFirstUserMessage,
+      isFirstUserMessage,
+      keyboardHeight,
+      isMessageSendAnimating,
+    })
+    
+    const assistantFadeStyle = useAnimatedStyle(() => ({
+      opacity: isFirstAssistantMessage && didUserMessageAnimate
+        ? withTiming(1, { duration: 350 })
+        : isFirstAssistantMessage
+        ? 0
+        : 1,
+    }), [isFirstAssistantMessage, didUserMessageAnimate])
+    
     const fadeAnim = useRef(new Animated.Value(0)).current
     const slideAnim = useRef(new Animated.Value(10)).current
 
     useEffect(() => {
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 150,
-          useNativeDriver: true,
-        }),
-        Animated.timing(slideAnim, {
-          toValue: 0,
-          duration: 150,
-          useNativeDriver: true,
-        }),
-      ]).start()
-    }, [])
+      if (!isFirstUserMessage && !isFirstAssistantMessage) {
+        Animated.parallel([
+          Animated.timing(fadeAnim, {
+            toValue: 1,
+            duration: 150,
+            useNativeDriver: true,
+          }),
+          Animated.timing(slideAnim, {
+            toValue: 0,
+            duration: 150,
+            useNativeDriver: true,
+          }),
+        ]).start()
+      }
+    }, [isFirstUserMessage, isFirstAssistantMessage, fadeAnim, slideAnim])
 
     const handleRetry = () => {
       if (onRetry && isFailed) {
@@ -522,15 +563,20 @@ export const MessageBubble = memo(
       }
     }
 
+    const AnimatedWrapper = isFirstUserMessage || isFirstAssistantMessage ? Reanimated.View : Animated.View
+    const wrapperStyle = isFirstUserMessage
+      ? firstMessageStyle
+      : isFirstAssistantMessage
+      ? assistantFadeStyle
+      : { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }
+
     return (
-      <Animated.View
+      <AnimatedWrapper
+        onLayout={isFirstUserMessage ? onLayout : undefined}
         style={[
           styles.bubbleWrapper,
           isUser ? styles.userWrapper : styles.assistantWrapper,
-          {
-            opacity: fadeAnim,
-            transform: [{ translateY: slideAnim }],
-          },
+          wrapperStyle,
         ]}
       >
         {isUser ? (
@@ -553,14 +599,15 @@ export const MessageBubble = memo(
             </View>
           </View>
         )}
-      </Animated.View>
+      </AnimatedWrapper>
     )
   },
   (prev, next) =>
     prev.message.id === next.message.id &&
     prev.message.content === next.message.content &&
     prev.message.reasoning === next.message.reasoning &&
-    prev.message.status === next.message.status,
+    prev.message.status === next.message.status &&
+    prev.index === next.index,
 )
 
 const styles = StyleSheet.create({

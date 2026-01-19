@@ -167,6 +167,18 @@ export default function SettingsScreen() {
         </TouchableOpacity>
 
         <View style={{ height: 40 }} />
+
+        <View style={styles.divider} />
+
+        <Text style={styles.sectionTitle}>Developer</Text>
+        <TouchableOpacity
+          style={[styles.button, { backgroundColor: "#6B7280" }]}
+          onPress={() => router.push("/perf-test")}
+        >
+          <Text style={styles.buttonText}>Markdown Performance Test</Text>
+        </TouchableOpacity>
+
+        <View style={{ height: 40 }} />
       </ScrollView>
     </View>
   )

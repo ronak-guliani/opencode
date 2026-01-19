@@ -1,0 +1,24 @@
+{
+  "name": "markdown-native",
+  "version": "1.0.0",
+  "description": "Native markdown rendering for React Native using cmark (iOS) and Markwon (Android)",
+  "main": "index.ts",
+  "types": "index.ts",
+  "keywords": [
+    "react-native",
+    "expo",
+    "markdown",
+    "native",
+    "cmark",
+    "markwon"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*",
+    "expo-modules-core": "*"
+  },
+  "devDependencies": {
+    "expo-modules-core": "~1.12.0"
+  }
+}

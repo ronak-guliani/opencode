@@ -1,0 +1,10 @@
+{
+  "name": "markdown-native",
+  "platforms": ["ios", "android"],
+  "ios": {
+    "modules": ["MarkdownNativeModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.markdown.MarkdownNativeModule"]
+  }
+}

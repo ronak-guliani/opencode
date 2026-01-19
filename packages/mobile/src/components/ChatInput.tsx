@@ -5,10 +5,13 @@ import {
   TouchableOpacity,
   Text,
   StyleSheet,
+  Platform,
   type NativeSyntheticEvent,
   type TextInputKeyPressEventData,
 } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
+import { BlurView } from "@react-native-community/blur"
+import { useNewMessageAnimation } from "@/hooks/useNewMessageAnimation"
 
 interface ChatInputProps {
   value: string
@@ -33,57 +36,74 @@ export function ChatInput({
   const hasText = value.trim().length > 0
   const isSendEnabled = hasText && !disabled
   const inputRef = useRef<TextInput>(null)
+  
+  const { isMessageSendAnimating } = useNewMessageAnimation()
+
+  const handleSend = () => {
+    if (hasText) {
+      isMessageSendAnimating.value = true
+      inputRef.current?.clear()
+      onChangeText("")
+      onSend()
+    }
+  }
 
   const handleKeyPress = (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
     if (event.nativeEvent.key === "Enter") {
       event.preventDefault()
-      if (hasText) {
-        inputRef.current?.clear()
-        onChangeText("")
-        onSend()
-      }
+      handleSend()
     }
   }
 
   return (
     <View style={styles.container}>
       <View style={[styles.innerContainer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-        <View style={styles.inputWrapper}>
-          <TextInput
-            ref={inputRef}
-            style={styles.input}
-            value={value}
-            onChangeText={onChangeText}
-            onKeyPress={handleKeyPress}
-            placeholder={placeholder}
-            placeholderTextColor="#666"
-            multiline
-            maxLength={2000}
-            editable={!disabled}
-            textAlignVertical="top"
-          />
+        <View style={styles.blurContainer}>
+          {Platform.OS === 'ios' && (
+            <BlurView
+              style={StyleSheet.absoluteFill}
+              blurType="dark"
+              blurAmount={20}
+              reducedTransparencyFallbackColor="#000000"
+            />
+          )}
+          <View style={[styles.inputWrapper, Platform.OS === 'android' && styles.inputWrapperAndroid]}>
+            <TextInput
+              ref={inputRef}
+              style={styles.input}
+              value={value}
+              onChangeText={onChangeText}
+              onKeyPress={handleKeyPress}
+              placeholder={placeholder}
+              placeholderTextColor="#666"
+              multiline
+              maxLength={2000}
+              editable={!disabled}
+              textAlignVertical="top"
+            />
 
-          <View style={styles.bottomRow}>
-            <View style={styles.leftActions}>
-              <TouchableOpacity style={styles.attachButton} disabled={disabled}>
-                <Text style={styles.attachIcon}>📎</Text>
-              </TouchableOpacity>
+            <View style={styles.bottomRow}>
+              <View style={styles.leftActions}>
+                <TouchableOpacity style={styles.attachButton} disabled={disabled}>
+                  <Text style={styles.attachIcon}>📎</Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity style={styles.modelButton} onPress={onModelPress} disabled={disabled}>
-                <Text style={styles.modelStar}>✦</Text>
-                <Text style={styles.modelName} numberOfLines={1}>
-                  {modelName}
-                </Text>
+                <TouchableOpacity style={styles.modelButton} onPress={onModelPress} disabled={disabled}>
+                  <Text style={styles.modelStar}>✦</Text>
+                  <Text style={styles.modelName} numberOfLines={1}>
+                    {modelName}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity
+                style={[styles.sendButton, isSendEnabled && styles.sendButtonActive]}
+                onPress={handleSend}
+                disabled={!isSendEnabled}
+              >
+                <Text style={[styles.sendIcon, isSendEnabled && styles.sendIconActive]}>↑</Text>
               </TouchableOpacity>
             </View>
-
-            <TouchableOpacity
-              style={[styles.sendButton, isSendEnabled && styles.sendButtonActive]}
-              onPress={onSend}
-              disabled={!isSendEnabled}
-            >
-              <Text style={[styles.sendIcon, isSendEnabled && styles.sendIconActive]}>↑</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </View>
@@ -93,21 +113,28 @@ export function ChatInput({
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: "#000000",
+    backgroundColor: "transparent",
   },
   innerContainer: {
     paddingHorizontal: 16,
     paddingTop: 8,
   },
-  inputWrapper: {
-    backgroundColor: "#000000",
+  blurContainer: {
     borderRadius: 16,
+    overflow: "hidden",
     borderWidth: 1,
-    borderColor: "#333333",
+    borderColor: "rgba(255, 255, 255, 0.1)",
+    backgroundColor: Platform.OS === 'android' ? "rgba(0, 0, 0, 0.8)" : "rgba(0, 0, 0, 0.3)",
+  },
+  inputWrapper: {
     paddingHorizontal: 16,
     paddingTop: 16,
     paddingBottom: 12,
     minHeight: 120,
+    backgroundColor: "transparent",
+  },
+  inputWrapperAndroid: {
+    backgroundColor: "rgba(0, 0, 0, 0.8)",
   },
   input: {
     flex: 1,
@@ -160,12 +187,12 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: "#333333",
+    backgroundColor: "rgba(255, 255, 255, 0.1)",
     justifyContent: "center",
     alignItems: "center",
   },
   sendButtonActive: {
-    backgroundColor: "#666666",
+    backgroundColor: "rgba(255, 255, 255, 0.2)",
   },
   sendIcon: {
     fontSize: 16,

@@ -15,6 +15,8 @@ import { ChatHeader } from "@/components/ChatHeader"
 import { KeyboardCompatibleView } from "@/components/KeyboardCompatibleView"
 import { showErrorToast, showInfoToast } from "@/store/toast"
 import { lightImpact, successNotification } from "@/utils/haptics"
+import { NewMessageAnimationProvider } from "@/hooks/useNewMessageAnimation"
+import { useKeyboardHeight } from "@/hooks/useKeyboardHeight"
 
 // Access store actions directly - these are stable references that don't need reactive subscriptions
 const sessionActions = {
@@ -340,6 +342,8 @@ export default function SessionScreen() {
       const model = providerActions.getSelectedModel()
       if (!model) return
 
+      const isNewChat = messages.length === 0
+
       lightImpact()
       setInputText("")
 
@@ -372,7 +376,7 @@ export default function SessionScreen() {
         setIsSending(false)
       }
     },
-    [inputText, isSending, id, client],
+    [inputText, isSending, id, client, messages.length],
   )
 
   const handleRetryMessage = useCallback(
@@ -462,31 +466,33 @@ export default function SessionScreen() {
         ]}
       >
         <KeyboardCompatibleView style={styles.content}>
-          <ChatHeader
-            onMenuPress={openDrawer}
-            onNewChatPress={handleNewChat}
-            onCopyAll={hasMessages ? handleCopyAllOutput : undefined}
-          />
-
-          {hasMessages || isLoading ? (
-            <TerminalScreen
-              sessionId={id}
-              onRetryMessage={handleRetryMessage}
-              onRefresh={handleRefresh}
-              isRefreshing={isRefreshing}
+          <NewMessageAnimationProvider>
+            <ChatHeader
+              onMenuPress={openDrawer}
+              onNewChatPress={handleNewChat}
+              onCopyAll={hasMessages ? handleCopyAllOutput : undefined}
             />
-          ) : (
-            <WelcomeScreen onSuggestionSelect={handleSuggestionSelect} />
-          )}
 
-          <ChatInput
-            value={inputText}
-            onChangeText={setInputText}
-            onSend={() => handleSendMessage()}
-            onModelPress={() => setModelSwitcherVisible(true)}
-            modelName={modelDisplayName}
-            disabled={isSending}
-          />
+            {hasMessages || isLoading ? (
+              <TerminalScreen
+                sessionId={id}
+                onRetryMessage={handleRetryMessage}
+                onRefresh={handleRefresh}
+                isRefreshing={isRefreshing}
+              />
+            ) : (
+              <WelcomeScreen onSuggestionSelect={handleSuggestionSelect} />
+            )}
+
+            <ChatInput
+              value={inputText}
+              onChangeText={setInputText}
+              onSend={() => handleSendMessage()}
+              onModelPress={() => setModelSwitcherVisible(true)}
+              modelName={modelDisplayName}
+              disabled={isSending}
+            />
+          </NewMessageAnimationProvider>
         </KeyboardCompatibleView>
       </Animated.View>
 

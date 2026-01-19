@@ -61,6 +61,7 @@
   "devDependencies": {
     "@actions/artifact": "5.0.1",
     "@tsconfig/bun": "catalog:",
+    "expo-dev-client": "6.0.20",
     "husky": "9.1.7",
     "prettier": "3.6.2",
     "sst": "3.17.23",

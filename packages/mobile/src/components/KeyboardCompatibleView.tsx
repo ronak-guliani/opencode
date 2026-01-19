@@ -1,4 +1,5 @@
-import { StyleSheet, KeyboardAvoidingView, Platform, type ViewStyle, type StyleProp } from "react-native"
+import { StyleSheet, type ViewStyle, type StyleProp } from "react-native"
+import { KeyboardAvoidingView } from "react-native-keyboard-controller"
 
 interface KeyboardCompatibleViewProps {
   children: React.ReactNode
@@ -10,7 +11,6 @@ export function KeyboardCompatibleView({ children, style, keyboardVerticalOffset
   return (
     <KeyboardAvoidingView
       style={[styles.container, style]}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
       keyboardVerticalOffset={keyboardVerticalOffset}
     >
       {children}

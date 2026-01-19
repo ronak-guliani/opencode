@@ -33,20 +33,20 @@ export default function AppLayout() {
       <Stack
         screenOptions={{
           headerShown: false,
+          animation: "fade",
+          animationDuration: 200,
         }}
       >
         <Stack.Screen name="index" />
         <Stack.Screen
           name="settings"
           options={{
-            animation: "slide_from_right",
             gestureEnabled: true,
           }}
         />
         <Stack.Screen
           name="session/[id]"
           options={{
-            animation: "slide_from_right",
             gestureEnabled: true,
           }}
         />
