@@ -60,6 +60,7 @@ export function ChatInput({
       <View style={[styles.innerContainer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
         <View style={styles.blurContainer}>
           {Platform.OS === 'ios' && (
+            // @ts-ignore
             <BlurView
               style={StyleSheet.absoluteFill}
               blurType="dark"

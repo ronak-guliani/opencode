@@ -571,6 +571,7 @@ export const MessageBubble = memo(
       : { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }
 
     return (
+      // @ts-ignore
       <AnimatedWrapper
         onLayout={isFirstUserMessage ? onLayout : undefined}
         style={[

@@ -1,3 +1,4 @@
+// @ts-ignore
 import { requireNativeViewManager } from 'expo-modules-core'
 import React from 'react'
 import { StyleSheet } from 'react-native'

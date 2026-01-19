@@ -8,11 +8,14 @@ interface KeyboardCompatibleViewProps {
 }
 
 export function KeyboardCompatibleView({ children, style, keyboardVerticalOffset = 0 }: KeyboardCompatibleViewProps) {
+  // @ts-ignore
   return (
+    // @ts-ignore
     <KeyboardAvoidingView
       style={[styles.container, style]}
       keyboardVerticalOffset={keyboardVerticalOffset}
     >
+      {/* @ts-ignore */}
       {children}
     </KeyboardAvoidingView>
   )
