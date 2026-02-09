@@ -1,0 +1,35 @@
+{
+  "name": "@opencode-ai/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "ios": "expo run:ios",
+    "android": "expo run:android",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@legendapp/list": "^1.1.0",
+    "@opencode-ai/sdk": "workspace:*",
+    "@react-navigation/drawer": "7.8.0",
+    "expo": "~54.0.33",
+    "expo-haptics": "~14.1.4",
+    "expo-router": "~5.1.0",
+    "expo-secure-store": "~14.2.4",
+    "expo-status-bar": "~3.0.9",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-gesture-handler": "~2.25.0",
+    "react-native-keyboard-controller": "~1.17.0",
+    "react-native-reanimated": "~3.19.0",
+    "react-native-safe-area-context": "~5.4.0",
+    "react-native-screens": "~4.11.0",
+    "react-native-unistyles": "~3.0.0-rc.8",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.0",
+    "typescript": "~5.9.2"
+  }
+}
