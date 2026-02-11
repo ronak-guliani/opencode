@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import {
   View,
   Text,
@@ -10,10 +10,19 @@ import {
   Platform,
   ScrollView,
 } from "react-native"
+import AsyncStorage from "@react-native-async-storage/async-storage"
 import { useRouter } from "expo-router"
 import { useConnection } from "../src/store/connection"
 import { bootstrap } from "../src/api/bootstrap"
 import { useTheme } from "../src/theme"
+
+const RECENT_SERVERS_KEY = "recent_servers_v1"
+const MAX_RECENT_SERVERS = 5
+
+type RecentServer = {
+  url: string
+  username?: string
+}
 
 export default function ConnectScreen() {
   const theme = useTheme()
@@ -26,25 +35,60 @@ export default function ConnectScreen() {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [showAuth, setShowAuth] = useState(false)
+  const [recentServers, setRecentServers] = useState<RecentServer[]>([])
 
   const [bootstrapError, setBootstrapError] = useState<string | null>(null)
+
+  const loadRecentServers = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(RECENT_SERVERS_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as RecentServer[]
+      if (!Array.isArray(parsed)) return
+      setRecentServers(parsed.filter((item) => item?.url))
+      if (parsed[0]?.url) {
+        setUrl((current) => current || parsed[0].url)
+      }
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const saveRecentServer = useCallback(async (next: RecentServer) => {
+    try {
+      const prevRaw = await AsyncStorage.getItem(RECENT_SERVERS_KEY)
+      const prev = prevRaw ? ((JSON.parse(prevRaw) as RecentServer[]) ?? []) : []
+      const deduped = [next, ...prev.filter((item) => item.url !== next.url)]
+      const trimmed = deduped.slice(0, MAX_RECENT_SERVERS)
+      setRecentServers(trimmed)
+      await AsyncStorage.setItem(RECENT_SERVERS_KEY, JSON.stringify(trimmed))
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  useEffect(() => {
+    loadRecentServers()
+  }, [loadRecentServers])
 
   const handleConnect = useCallback(async () => {
     if (!url.trim()) return
     setBootstrapError(null)
     try {
       const auth = showAuth && username ? { username, password } : undefined
-      await connect(url.trim(), auth)
+      const normalized = url.trim()
+      await connect(normalized, auth)
       const result = await bootstrap()
       if (result.status === "error") {
         setBootstrapError(result.error ?? "Bootstrap failed")
         return
       }
+      await saveRecentServer({ url: normalized, username: auth?.username })
       router.replace("/(main)/session")
     } catch {
       // connection error is already set in the store
     }
-  }, [url, username, password, showAuth])
+  }, [url, username, password, showAuth, connect, router, saveRecentServer])
 
   const connecting = status === "connecting"
 
@@ -129,6 +173,38 @@ export default function ConnectScreen() {
             </View>
           )}
 
+          {recentServers.length > 0 && (
+            <View style={styles.recentSection}>
+              <Text style={[styles.label, { color: theme.colors.textSecondary }]}>Recent Servers</Text>
+              <View style={[styles.recentList, { borderColor: theme.colors.border }]}>
+                {recentServers.map((server, index) => (
+                  <View key={server.url}>
+                    {index > 0 && <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />}
+                    <Pressable
+                      style={styles.recentItem}
+                      onPress={() => {
+                        setUrl(server.url)
+                        setUsername(server.username ?? "")
+                        setShowAuth(!!server.username)
+                      }}
+                    >
+                      <Text style={[styles.recentUrl, { color: theme.colors.text }]} numberOfLines={1}>
+                        {server.url}
+                      </Text>
+                      {server.username ? (
+                        <Text style={[styles.recentMeta, { color: theme.colors.textTertiary }]}>
+                          auth: {server.username}
+                        </Text>
+                      ) : (
+                        <Text style={[styles.recentMeta, { color: theme.colors.textTertiary }]}>no auth</Text>
+                      )}
+                    </Pressable>
+                  </View>
+                ))}
+              </View>
+            </View>
+          )}
+
           {(error || bootstrapError) && (
             <View style={[styles.errorBox, { backgroundColor: theme.colors.error + "15" }]}>
               <Text style={[styles.errorText, { color: theme.colors.error }]}>{error || bootstrapError}</Text>
@@ -200,6 +276,29 @@ const styles = StyleSheet.create({
   },
   authFields: {
     gap: 12,
+  },
+  recentSection: {
+    gap: 6,
+  },
+  recentList: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  recentItem: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 2,
+  },
+  recentUrl: {
+    fontSize: 13,
+    fontWeight: "500",
+  },
+  recentMeta: {
+    fontSize: 11,
+  },
+  separator: {
+    height: StyleSheet.hairlineWidth,
   },
   errorBox: {
     borderRadius: 10,

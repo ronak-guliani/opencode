@@ -1,6 +1,7 @@
 import { useEffect } from "react"
 import { StyleSheet, type ViewProps } from "react-native"
 import Animated, {
+  cancelAnimation,
   useSharedValue,
   useAnimatedStyle,
   withRepeat,
@@ -50,7 +51,11 @@ export function AnimatedStatusDot({ status }: Props) {
       scale.value = withTiming(1, { duration: 200 })
       opacity.value = withTiming(1, { duration: 200 })
     }
-  }, [busy])
+    return () => {
+      cancelAnimation(scale)
+      cancelAnimation(opacity)
+    }
+  }, [busy, opacity, scale])
 
   const style = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],

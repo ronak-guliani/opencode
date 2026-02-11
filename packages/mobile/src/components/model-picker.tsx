@@ -1,10 +1,10 @@
-import { useState, useMemo, useCallback, memo } from "react"
+import { useState, useMemo, useCallback, memo, useEffect } from "react"
 import {
   View,
   Text,
   TextInput,
   Pressable,
-  FlatList,
+  SectionList,
   StyleSheet,
   Modal,
   useWindowDimensions,
@@ -16,8 +16,6 @@ import * as Haptics from "expo-haptics"
 import { useSettings, modelName } from "../store/settings"
 import { useTheme, type Theme } from "../theme"
 
-type ModelKey = { providerID: string; modelID: string }
-
 type ModelItem = {
   id: string
   name: string
@@ -26,9 +24,28 @@ type ModelItem = {
   reasoning: boolean
 }
 
+type ModelSection = {
+  providerID: string
+  providerName: string
+  data: ModelItem[]
+}
+
 type Props = {
   visible: boolean
   onClose: () => void
+}
+
+const POPULAR_PROVIDERS = ["opencode", "anthropic", "github-copilot", "openai", "google", "openrouter", "vercel"]
+
+function compareProviderOrder(a: ModelSection, b: ModelSection) {
+  const ai = POPULAR_PROVIDERS.indexOf(a.providerID)
+  const bi = POPULAR_PROVIDERS.indexOf(b.providerID)
+  const aPopular = ai >= 0
+  const bPopular = bi >= 0
+  if (aPopular && !bPopular) return -1
+  if (!aPopular && bPopular) return 1
+  if (aPopular && bPopular && ai !== bi) return ai - bi
+  return a.providerName.localeCompare(b.providerName)
 }
 
 export function ModelPicker({ visible, onClose }: Props) {
@@ -40,44 +57,51 @@ export function ModelPicker({ visible, onClose }: Props) {
   const setModel = useSettings((s) => s.setModel)
   const [query, setQuery] = useState("")
 
-  const models = useMemo(() => {
+  const sections = useMemo<ModelSection[]>(() => {
     if (!providerData) return []
+
     const connected = new Set(providerData.connected)
-    const q = query.toLowerCase()
-    const result: ModelItem[] = []
+    const q = query.trim().toLowerCase()
+    const result: ModelSection[] = []
 
     for (const provider of providerData.all) {
       if (!connected.has(provider.id)) continue
+      const providerName = provider.name || provider.id
+      const providerMatches =
+        q.length > 0 && (providerName.toLowerCase().includes(q) || provider.id.toLowerCase().includes(q))
+      const models: ModelItem[] = []
 
-      for (const [key, info] of Object.entries(provider.models)) {
+      for (const [modelKey, info] of Object.entries(provider.models)) {
         if (info.status === "deprecated") continue
-        if (!info.tool_call) continue
-        const name = info.name || key
-        if (q && !name.toLowerCase().includes(q) && !provider.name.toLowerCase().includes(q)) continue
-        result.push({
-          id: info.id || key,
+        const id = info.id || modelKey
+        const name = info.name || id
+        const matches = name.toLowerCase().includes(q) || id.toLowerCase().includes(q)
+        if (q && !providerMatches && !matches) continue
+        models.push({
+          id,
           name,
           providerID: provider.id,
-          providerName: provider.name || provider.id,
+          providerName,
           reasoning: info.reasoning,
         })
       }
+
+      if (!models.length) continue
+      models.sort((a, b) => a.name.localeCompare(b.name))
+      result.push({
+        providerID: provider.id,
+        providerName,
+        data: models,
+      })
     }
 
-    // Sort: popular providers first, then alpha
-    const popular = ["anthropic", "openai", "google", "openrouter"]
-    result.sort((a, b) => {
-      const ai = popular.indexOf(a.providerID)
-      const bi = popular.indexOf(b.providerID)
-      if (ai >= 0 && bi < 0) return -1
-      if (ai < 0 && bi >= 0) return 1
-      if (ai >= 0 && bi >= 0 && ai !== bi) return ai - bi
-      if (a.providerID !== b.providerID) return a.providerName.localeCompare(b.providerName)
-      return a.name.localeCompare(b.name)
-    })
-
+    result.sort(compareProviderOrder)
     return result
   }, [providerData, query])
+
+  useEffect(() => {
+    if (!visible) setQuery("")
+  }, [visible])
 
   const handleSelect = useCallback(
     (item: ModelItem) => {
@@ -85,14 +109,14 @@ export function ModelPicker({ visible, onClose }: Props) {
       setModel({ providerID: item.providerID, modelID: item.id })
       onClose()
     },
-    [onClose],
+    [onClose, setModel],
   )
 
   const handleDefault = useCallback(() => {
     Haptics.selectionAsync()
     setModel(null)
     onClose()
-  }, [onClose])
+  }, [onClose, setModel])
 
   const selected = current ? `${current.providerID}:${current.modelID}` : null
 
@@ -143,20 +167,29 @@ export function ModelPicker({ visible, onClose }: Props) {
             {!current && <Text style={[styles.check, { color: theme.colors.accent }]}>{"\u2713"}</Text>}
           </Pressable>
 
-          <FlatList
-            data={models}
+          <SectionList
+            sections={sections}
             keyExtractor={(item) => `${item.providerID}:${item.id}`}
-            renderItem={({ item }) => (
-              <PickerRow
-                item={item}
-                selected={selected === `${item.providerID}:${item.id}`}
-                onSelect={handleSelect}
-                theme={theme}
-              />
+            renderSectionHeader={({ section }) => (
+              <View style={[styles.sectionHeader, { borderTopColor: theme.colors.border + "22" }]}>
+                <Text style={[styles.sectionHeaderText, { color: theme.colors.textTertiary }]}>{section.providerName}</Text>
+              </View>
             )}
+            renderItem={({ item }) => {
+              const key = `${item.providerID}:${item.id}`
+              return <PickerRow item={item} selected={selected === key} onSelect={handleSelect} theme={theme} />
+            }}
+            ListEmptyComponent={
+              <View style={styles.empty}>
+                <Text style={[styles.emptyText, { color: theme.colors.textTertiary }]}>
+                  {providerData ? "No models found" : "Loading models..."}
+                </Text>
+              </View>
+            }
             style={styles.list}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
+            stickySectionHeadersEnabled={false}
           />
         </BlurView>
       </View>
@@ -189,7 +222,7 @@ const PickerRow = memo(function PickerRow({
           {item.name}
         </Text>
         <View style={styles.meta}>
-          <Text style={[styles.provider, { color: theme.colors.textTertiary }]}>{item.providerName}</Text>
+          <Text style={[styles.provider, { color: theme.colors.textTertiary }]}>{item.id}</Text>
           {item.reasoning && (
             <View style={[styles.badge, { backgroundColor: theme.colors.accent + "20" }]}>
               <Text style={[styles.badgeText, { color: theme.colors.accent }]}>reasoning</Text>
@@ -204,12 +237,20 @@ const PickerRow = memo(function PickerRow({
 
 export function ModelPickerTrigger({ onPress }: { onPress: () => void }) {
   const theme = useTheme()
+  const providerData = useSettings((s) => s.providerData)
+  const current = useSettings((s) => s.model)
   const label = useSettings(modelName)
+  const display = useMemo(() => {
+    if (!current) return "Default model"
+    const provider = providerData?.all.find((item) => item.id === current.providerID)
+    const providerName = provider?.name || current.providerID
+    return `${providerName} · ${label}`
+  }, [providerData, current, label])
 
   return (
-    <Pressable style={styles.trigger} onPress={onPress} hitSlop={8}>
-      <Text style={[styles.triggerText, { color: theme.colors.textTertiary }]} numberOfLines={1}>
-        {label}
+    <Pressable style={[styles.trigger, { backgroundColor: theme.colors.surfaceRaised + "99" }]} onPress={onPress} hitSlop={8}>
+      <Text style={[styles.triggerText, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+        {display}
       </Text>
       <Text style={[styles.triggerChevron, { color: theme.colors.textTertiary }]}>{"\u25BE"}</Text>
     </Pressable>
@@ -264,6 +305,25 @@ const styles = StyleSheet.create({
   list: {
     flex: 1,
   },
+  sectionHeader: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 6,
+  },
+  sectionHeaderText: {
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    fontWeight: "600",
+  },
+  empty: {
+    paddingVertical: 24,
+    alignItems: "center",
+  },
+  emptyText: {
+    fontSize: 13,
+  },
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -303,16 +363,19 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     alignSelf: "flex-start",
-    paddingHorizontal: 2,
+    maxWidth: "90%",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     marginBottom: 4,
   },
   triggerText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "500",
-    maxWidth: 200,
+    maxWidth: 260,
   },
   triggerChevron: {
     fontSize: 9,
-    marginLeft: 3,
+    marginLeft: 6,
   },
 })

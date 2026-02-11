@@ -16,6 +16,7 @@ export function MessagesList({ sessionId, messages }: Props) {
   const { listRef, isAtEnd, messageCount, composerH } = useChat()
   const didInitialScroll = useRef(false)
   const prevCount = useRef(0)
+  const raf = useRef<number | null>(null)
   const [layoutHeight, setLayoutHeight] = useState(0)
   const [contentHeight, setContentHeight] = useState(0)
 
@@ -28,31 +29,64 @@ export function MessagesList({ sessionId, messages }: Props) {
   const composerPad = composerH || 120
   const blankSize = Math.max(0, layoutHeight - contentHeight - topPadding) + composerPad
 
+  const scheduleScrollToEnd = useCallback((animated: boolean) => {
+    if (raf.current !== null) {
+      cancelAnimationFrame(raf.current)
+      raf.current = null
+    }
+    raf.current = requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd({ animated })
+      raf.current = null
+    })
+  }, [listRef])
+
+  useEffect(() => {
+    return () => {
+      if (raf.current !== null) {
+        cancelAnimationFrame(raf.current)
+        raf.current = null
+      }
+    }
+  }, [])
+
+  // Reset local scroll bookkeeping when changing sessions.
+  useEffect(() => {
+    didInitialScroll.current = false
+    prevCount.current = 0
+    setLayoutHeight(0)
+    setContentHeight(0)
+    if (raf.current !== null) {
+      cancelAnimationFrame(raf.current)
+      raf.current = null
+    }
+  }, [sessionId])
+
   // Keep shared value in sync for animation hooks
   useEffect(() => {
     messageCount.value = count
-  }, [count])
+  }, [count, messageCount])
 
   // Initial scroll to end when messages first load
   useEffect(() => {
     if (count > 0 && !didInitialScroll.current) {
       didInitialScroll.current = true
-      const scroll = () => listRef.current?.scrollToEnd({ animated: false })
-      requestAnimationFrame(scroll)
-      setTimeout(scroll, 100)
-      setTimeout(scroll, 300)
+      scheduleScrollToEnd(false)
+      const t1 = setTimeout(() => scheduleScrollToEnd(false), 100)
+      const t2 = setTimeout(() => scheduleScrollToEnd(false), 300)
+      return () => {
+        clearTimeout(t1)
+        clearTimeout(t2)
+      }
     }
-  }, [count])
+  }, [count, scheduleScrollToEnd])
 
   // Auto-scroll when new messages arrive (if user is at bottom)
   useEffect(() => {
     if (count > prevCount.current && isAtEnd.value) {
-      requestAnimationFrame(() => {
-        listRef.current?.scrollToEnd({ animated: true })
-      })
+      scheduleScrollToEnd(true)
     }
     prevCount.current = count
-  }, [count, lastId])
+  }, [count, lastId, scheduleScrollToEnd])
 
   const renderItem = useCallback(({ item, index }: { item: Message; index: number }) => {
     if (item.role === "user") return <UserMessage message={item} index={index} />
@@ -81,10 +115,10 @@ export function MessagesList({ sessionId, messages }: Props) {
     (_w: number, h: number) => {
       setContentHeight(h)
       if (isAtEnd.value && count > 0) {
-        listRef.current?.scrollToEnd({ animated: true })
+        scheduleScrollToEnd(true)
       }
     },
-    [count],
+    [count, scheduleScrollToEnd],
   )
 
   const handleLayout = useCallback((e: LayoutChangeEvent) => {
@@ -112,6 +146,10 @@ export function MessagesList({ sessionId, messages }: Props) {
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
       maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+      initialNumToRender={20}
+      windowSize={7}
+      maxToRenderPerBatch={12}
+      removeClippedSubviews
     />
   )
 }

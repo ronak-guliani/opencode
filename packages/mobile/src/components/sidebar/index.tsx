@@ -16,6 +16,7 @@ import Animated, { useSharedValue, useAnimatedStyle, withTiming, runOnJS } from 
 import { LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
 import * as ZeegoContextMenu from "zeego/context-menu"
 import * as Haptics from "expo-haptics"
+import * as Clipboard from "expo-clipboard"
 import type { Session } from "@opencode-ai/sdk/client"
 import { useSessions } from "../../store/sessions"
 import { useConnection } from "../../store/connection"
@@ -23,6 +24,7 @@ import { useTheme } from "../../theme"
 import { group as dateGroup, relative } from "../../util/format"
 import { AnimatedStatusDot } from "../status-dot"
 import { SessionListSkeleton } from "../skeleton"
+import { client } from "../../api/client"
 
 // React 19 JSX compat casts
 const AnimatedView = Animated.View as React.ComponentType<ViewProps & { style?: unknown }>
@@ -66,7 +68,9 @@ export function Sidebar({ onSelect, onNew, onSettings }: Props) {
   const sessions = useSessions((s) => s.sessions)
   const loading = useSessions((s) => s.loading)
   const fetch = useSessions((s) => s.fetch)
+  const fetchStatuses = useSessions((s) => s.fetchStatuses)
   const archive = useSessions((s) => s.archive)
+  const deleteSession = useSessions((s) => s.delete)
   const directory = useConnection((s) => s.directory)
   const [query, setQuery] = useState("")
 
@@ -107,22 +111,50 @@ export function Sidebar({ onSelect, onNew, onSettings }: Props) {
           style: "destructive",
           onPress: () => {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
-            archive(id)
+            deleteSession(id)
           },
         },
       ])
     },
-    [archive],
+    [deleteSession],
   )
+
+  const handleRefresh = useCallback(async () => {
+    await Promise.all([fetch(), fetchStatuses()])
+  }, [fetch, fetchStatuses])
+
+  const handleShare = useCallback(async (id: string) => {
+    try {
+      const result = await client().session.share({ path: { id } })
+      const shareURL = result.data?.share?.url
+      if (!shareURL) {
+        Alert.alert("Share unavailable", "Could not generate a share link for this session.")
+        return
+      }
+      await Clipboard.setStringAsync(shareURL)
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+      Alert.alert("Share link copied", shareURL)
+    } catch {
+      Alert.alert("Share failed", "Could not generate a share link.")
+    }
+  }, [])
 
   const renderItem = useCallback(
     ({ item }: { item: SectionItem }) => {
       if (item.type === "header") {
         return <Text style={[styles.sectionHeader, { color: theme.colors.textTertiary }]}>{item.title}</Text>
       }
-      return <SessionRow session={item.session} onSelect={onSelect} onArchive={handleArchive} onDelete={handleDelete} />
+      return (
+        <SessionRow
+          session={item.session}
+          onSelect={onSelect}
+          onArchive={handleArchive}
+          onDelete={handleDelete}
+          onShare={handleShare}
+        />
+      )
     },
-    [theme, handleArchive, handleDelete, onSelect],
+    [theme, handleArchive, handleDelete, handleShare, onSelect],
   )
 
   const keyExtractor = useCallback((item: SectionItem, index: number) => {
@@ -188,9 +220,13 @@ export function Sidebar({ onSelect, onNew, onSettings }: Props) {
           style={styles.list}
           contentContainerStyle={styles.listContent}
           refreshControl={
-            <RefreshControl refreshing={loading} onRefresh={fetch} tintColor={theme.colors.textTertiary} />
+            <RefreshControl refreshing={loading} onRefresh={handleRefresh} tintColor={theme.colors.textTertiary} />
           }
           showsVerticalScrollIndicator={false}
+          initialNumToRender={20}
+          windowSize={7}
+          maxToRenderPerBatch={12}
+          removeClippedSubviews
         />
       )}
 
@@ -209,11 +245,13 @@ const SessionRow = memo(function SessionRow({
   onSelect,
   onArchive,
   onDelete,
+  onShare,
 }: {
   session: Session
   onSelect: (id: string) => void
   onArchive: (id: string) => void
   onDelete: (id: string) => void
+  onShare: (id: string) => void
 }) {
   const theme = useTheme()
   const status = useSessions((s) => s.statuses[session.id])
@@ -284,6 +322,10 @@ const SessionRow = memo(function SessionRow({
             </MenuTrigger>
 
             <MenuContent>
+              <MenuItem key="share" onSelect={() => onShare(session.id)}>
+                <MenuItemTitle>Share</MenuItemTitle>
+                <MenuItemIcon ios={{ name: "square.and.arrow.up" }} />
+              </MenuItem>
               <MenuItem key="archive" onSelect={() => onArchive(session.id)}>
                 <MenuItemTitle>Archive</MenuItemTitle>
                 <MenuItemIcon ios={{ name: "archivebox" }} />

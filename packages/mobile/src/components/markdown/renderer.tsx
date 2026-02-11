@@ -43,7 +43,10 @@ function rules(theme: Theme) {
         key={node.key}
         style={{ color: theme.colors.link, textDecorationLine: "underline" }}
         onPress={() => {
-          if (node.attributes?.href) Linking.openURL(node.attributes.href)
+          if (!node.attributes?.href) return
+          Linking.openURL(node.attributes.href).catch(() => {
+            // ignore invalid URLs from model output
+          })
         }}
       >
         {children}

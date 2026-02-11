@@ -105,9 +105,9 @@ function parseSSE(buffer: string): { events: Event[]; remaining: string } {
   return { events, remaining }
 }
 
-function connect(): Promise<void> {
+function connect(current: Subscriber): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (!subscriber?.active) {
+    if (!current.active) {
       reject(new Error("cancelled"))
       return
     }
@@ -124,7 +124,7 @@ function connect(): Promise<void> {
     }
 
     const xhr = new XMLHttpRequest()
-    subscriber.xhr = xhr
+    current.xhr = xhr
 
     let lastIndex = 0
     let buffer = ""
@@ -148,7 +148,7 @@ function connect(): Promise<void> {
     }
 
     xhr.onprogress = () => {
-      if (!subscriber?.active) return
+      if (!current.active) return
 
       const raw = xhr.responseText.slice(lastIndex)
       lastIndex = xhr.responseText.length
@@ -168,7 +168,7 @@ function connect(): Promise<void> {
       }
 
       for (const event of events) {
-        if (!subscriber?.active) break
+        if (!current.active) break
         coalesce(queue, event)
         if (!timer) timer = setTimeout(flush, 16)
       }
@@ -176,14 +176,18 @@ function connect(): Promise<void> {
 
     xhr.onerror = () => {
       if (DEBUG) console.warn("[sse] xhr error")
-      subscriber!.xhr = null
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      current.xhr = null
       reject(new Error("xhr error"))
     }
 
     xhr.onload = () => {
       // Stream ended — server closed connection
       if (DEBUG) console.log("[sse] stream ended (onload)")
-      subscriber!.xhr = null
+      current.xhr = null
       // Flush any remaining buffer
       if (buffer.trim()) {
         const { events } = parseSSE(buffer + "\n\n")
@@ -199,7 +203,11 @@ function connect(): Promise<void> {
     }
 
     xhr.onabort = () => {
-      subscriber!.xhr = null
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      current.xhr = null
       reject(new Error("aborted"))
     }
 
@@ -210,40 +218,60 @@ function connect(): Promise<void> {
 export async function subscribe() {
   if (subscriber?.active) return
 
-  subscriber = { active: true, xhr: null }
+  const current: Subscriber = { active: true, xhr: null }
+  subscriber = current
 
   let delay = 1000
 
-  while (subscriber.active) {
+  while (current.active) {
     try {
-      await connect()
+      await connect(current)
       // Stream ended cleanly — reconnect immediately
-      if (subscriber.active) {
+      if (current.active) {
         delay = 1000
         useConnection.getState().setStream("reconnecting")
       }
     } catch (e) {
-      if (!subscriber.active) break
+      if (!current.active) break
       useConnection.getState().setStream("reconnecting")
       if (DEBUG) console.warn("[sse] reconnecting in", delay, "ms:", e)
-      await sleep(delay)
+      await sleep(delay, () => current.active)
       delay = Math.min(delay * 2, 30000)
     }
+  }
+
+  if (subscriber === current) {
+    subscriber = null
   }
 }
 
 export function unsubscribe() {
-  if (subscriber) {
-    subscriber.active = false
-    if (subscriber.xhr) {
-      subscriber.xhr.abort()
-      subscriber.xhr = null
+  const current = subscriber
+  if (current) {
+    current.active = false
+    if (current.xhr) {
+      current.xhr.abort()
+      current.xhr = null
     }
-    subscriber = null
+    if (subscriber === current) subscriber = null
     useConnection.getState().setStream("disconnected")
   }
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function sleep(ms: number, isActive: () => boolean) {
+  return new Promise<void>((resolve) => {
+    const start = Date.now()
+    const tick = () => {
+      if (!isActive()) {
+        resolve()
+        return
+      }
+      if (Date.now() - start >= ms) {
+        resolve()
+        return
+      }
+      setTimeout(tick, 100)
+    }
+    tick()
+  })
 }

@@ -37,12 +37,12 @@ export function Composer({ sessionId }: Props) {
     requestAnimationFrame(() => {
       listRef.current?.scrollToEnd({ animated: true })
     })
-  }, [text, sessionId])
+  }, [text, sessionId, send, listRef])
 
   const handleAbort = useCallback(() => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
     abort(sessionId)
-  }, [sessionId])
+  }, [sessionId, abort])
 
   const handleLayout = useCallback((e: { nativeEvent: { layout: { height: number } } }) => {
     const h = e.nativeEvent.layout.height
@@ -54,7 +54,7 @@ export function Composer({ sessionId }: Props) {
       })
     }
     prevHeight.current = h
-  }, [])
+  }, [setComposerH, isAtEnd, listRef])
 
   const Sticky = KeyboardStickyView as React.ComponentType<{
     offset?: { closed?: number; opened?: number }
@@ -113,22 +113,24 @@ export function Composer({ sessionId }: Props) {
         ]}
         onLayout={handleLayout}
       >
-        <ModelPickerTrigger onPress={() => setPickerVisible(true)} />
         {isLiquidGlassSupported ? (
           <GlassContainer spacing={8} style={styles.glassRow}>
             <Glass interactive style={[styles.glassInput, { borderRadius: theme.radii.lg }]}>
-              <TextInput
-                style={[styles.input, { color: theme.colors.text }]}
-                value={text}
-                onChangeText={setText}
-                placeholder="Send a message..."
-                placeholderTextColor={theme.colors.textTertiary}
-                multiline
-                maxLength={100000}
-                editable={!sending}
-                returnKeyType="default"
-                blurOnSubmit={false}
-              />
+              <View style={styles.inputContent}>
+                <ModelPickerTrigger onPress={() => setPickerVisible(true)} />
+                <TextInput
+                  style={[styles.input, { color: theme.colors.text }]}
+                  value={text}
+                  onChangeText={setText}
+                  placeholder="Send a message..."
+                  placeholderTextColor={theme.colors.textTertiary}
+                  multiline
+                  maxLength={100000}
+                  editable={!sending}
+                  returnKeyType="default"
+                  blurOnSubmit={false}
+                />
+              </View>
             </Glass>
             <Glass interactive style={styles.glassSend}>
               {sendButton}
@@ -145,18 +147,21 @@ export function Composer({ sessionId }: Props) {
               },
             ]}
           >
-            <TextInput
-              style={[styles.input, { color: theme.colors.text }]}
-              value={text}
-              onChangeText={setText}
-              placeholder="Send a message..."
-              placeholderTextColor={theme.colors.textTertiary}
-              multiline
-              maxLength={100000}
-              editable={!sending}
-              returnKeyType="default"
-              blurOnSubmit={false}
-            />
+            <View style={styles.inputContent}>
+              <ModelPickerTrigger onPress={() => setPickerVisible(true)} />
+              <TextInput
+                style={[styles.input, { color: theme.colors.text }]}
+                value={text}
+                onChangeText={setText}
+                placeholder="Send a message..."
+                placeholderTextColor={theme.colors.textTertiary}
+                multiline
+                maxLength={100000}
+                editable={!sending}
+                returnKeyType="default"
+                blurOnSubmit={false}
+              />
+            </View>
             {sendButton}
           </View>
         )}
@@ -196,8 +201,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     gap: 8,
   },
-  input: {
+  inputContent: {
     flex: 1,
+  },
+  input: {
     fontSize: 15,
     lineHeight: 22,
     minHeight: 36,

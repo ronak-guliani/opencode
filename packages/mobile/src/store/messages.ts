@@ -82,7 +82,16 @@ export const useMessages = createStore<MessageState>((set, get) => ({
         },
       })
     } catch {
-      // SSE events will handle actual message updates
+      // Roll back optimistic message when request fails locally.
+      set((state) => {
+        const nextMessages = (state.messages[sessionID] ?? []).filter((m) => m.id !== id)
+        const nextParts = { ...state.parts }
+        delete nextParts[id]
+        return {
+          messages: { ...state.messages, [sessionID]: nextMessages },
+          parts: nextParts,
+        }
+      })
     } finally {
       set((state) => ({
         sending: { ...state.sending, [sessionID]: false },
@@ -120,12 +129,17 @@ export const useMessages = createStore<MessageState>((set, get) => ({
   },
 
   _removeMessage: (sessionID, messageID) => {
-    set((state) => ({
-      messages: {
-        ...state.messages,
-        [sessionID]: (state.messages[sessionID] ?? []).filter((m) => m.id !== messageID),
-      },
-    }))
+    set((state) => {
+      const nextParts = { ...state.parts }
+      delete nextParts[messageID]
+      return {
+        messages: {
+          ...state.messages,
+          [sessionID]: (state.messages[sessionID] ?? []).filter((m) => m.id !== messageID),
+        },
+        parts: nextParts,
+      }
+    })
   },
 
   _upsertPart: (messageID, part) => {

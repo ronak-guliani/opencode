@@ -1,6 +1,6 @@
 import { useEffect, type ReactNode } from "react"
 import { StyleSheet, Text, type ViewProps, type TextProps } from "react-native"
-import Animated, { useSharedValue, withTiming, useAnimatedStyle } from "react-native-reanimated"
+import Animated, { useSharedValue, withTiming, useAnimatedStyle, withDelay, runOnJS } from "react-native-reanimated"
 import { useFadeDisabled } from "./disable-fade"
 import { createUsePool } from "./pool"
 
@@ -22,10 +22,10 @@ function FadeIn({ children, onComplete }: { children: ReactNode; onComplete?: ()
   useEffect(() => {
     opacity.value = withTiming(1, { duration: DURATION }, (finished) => {
       if (finished && onComplete) {
-        onComplete()
+        runOnJS(onComplete)()
       }
     })
-  }, [])
+  }, [onComplete])
 
   const style = useAnimatedStyle(() => ({
     opacity: opacity.value,
@@ -73,11 +73,8 @@ function WordFadeIn({ word, delay }: { word: string; delay: number }) {
   const opacity = useSharedValue(0)
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      opacity.value = withTiming(1, { duration: DURATION })
-    }, delay)
-    return () => clearTimeout(timer)
-  }, [])
+    opacity.value = withDelay(delay, withTiming(1, { duration: DURATION }))
+  }, [delay])
 
   const style = useAnimatedStyle(() => ({
     opacity: opacity.value,

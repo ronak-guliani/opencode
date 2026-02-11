@@ -11,6 +11,7 @@ type SessionState = {
   fetchStatuses: () => Promise<void>
   create: () => Promise<Session>
   archive: (id: string) => Promise<void>
+  delete: (id: string) => Promise<void>
   _upsert: (session: Session) => void
   _remove: (id: string) => void
   _setStatus: (id: string, status: SessionStatus) => void
@@ -55,6 +56,25 @@ export const useSessions = createStore<SessionState>((set, get) => ({
   },
 
   archive: async (id) => {
+    try {
+      await client().session.update({
+        path: { id },
+        body: {
+          // OpenAPI schema is stale; server accepts archival timestamp.
+          time: { archived: Date.now() },
+        } as unknown as { title?: string },
+      })
+    } catch {
+      // Fallback for older server/schema mismatches.
+      await client().session.delete({ path: { id } })
+    }
+    get()._remove(id)
+    if (get().current === id) {
+      set({ current: null })
+    }
+  },
+
+  delete: async (id) => {
     await client().session.delete({ path: { id } })
     get()._remove(id)
     if (get().current === id) {
@@ -71,9 +91,15 @@ export const useSessions = createStore<SessionState>((set, get) => ({
   },
 
   _remove: (id) => {
-    set((state) => ({
-      sessions: state.sessions.filter((s) => s.id !== id),
-    }))
+    set((state) => {
+      const nextStatuses = { ...state.statuses }
+      delete nextStatuses[id]
+      return {
+        sessions: state.sessions.filter((s) => s.id !== id),
+        statuses: nextStatuses,
+        current: state.current === id ? null : state.current,
+      }
+    })
   },
 
   _setStatus: (id, status) => {

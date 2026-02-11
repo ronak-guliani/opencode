@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { View, StyleSheet, useWindowDimensions } from "react-native"
 import { Stack, useRouter } from "expo-router"
 import { Drawer } from "react-native-drawer-layout"
@@ -6,6 +6,7 @@ import { isLiquidGlassSupported } from "@callstack/liquid-glass"
 import { Sidebar } from "../../src/components/sidebar"
 import { ConnectionBanner } from "../../src/components/connection-banner"
 import { useTheme } from "../../src/theme"
+import { useSessions } from "../../src/store/sessions"
 
 export default function MainLayout() {
   const theme = useTheme()
@@ -13,24 +14,31 @@ export default function MainLayout() {
   const { width } = useWindowDimensions()
   const isTablet = width >= 768
   const [open, setOpen] = useState(isTablet)
+  const select = useSessions((s) => s.select)
+
+  useEffect(() => {
+    setOpen(isTablet)
+  }, [isTablet])
 
   const onSelectSession = useCallback(
     (id: string) => {
+      select(id)
       if (!isTablet) setOpen(false)
       router.push(`/(main)/session/${id}`)
     },
-    [isTablet],
+    [isTablet, router, select],
   )
 
   const onNewSession = useCallback(() => {
+    select(null)
     if (!isTablet) setOpen(false)
     router.push("/(main)/session")
-  }, [isTablet])
+  }, [isTablet, router, select])
 
   const onSettings = useCallback(() => {
     if (!isTablet) setOpen(false)
     router.push("/(main)/settings")
-  }, [isTablet])
+  }, [isTablet, router])
 
   return (
     <Drawer

@@ -19,9 +19,11 @@ export default function SettingsScreen() {
   const router = useRouter()
   const url = useConnection((s) => s.url)
   const status = useConnection((s) => s.status)
+  const serverVersion = useConnection((s) => s.serverVersion)
   const disconnect = useConnection((s) => s.disconnect)
   const config = useSettings((s) => s.config)
   const connected = useSettings((s) => s.providerData?.connected) ?? EMPTY_CONNECTED
+  const providerAuth = useSettings((s) => s.providerAuth)
   const appearance = useSettings((s) => s.appearance)
   const setAppearance = useSettings((s) => s.setAppearance)
 
@@ -46,6 +48,8 @@ export default function SettingsScreen() {
           <Row label="URL" value={url ?? "Not connected"} theme={theme} />
           <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
           <Row label="Status" value={status} theme={theme} />
+          <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
+          <Row label="Server Version" value={serverVersion ?? "Unknown"} theme={theme} />
         </View>
 
         <Pressable style={[styles.destructiveButton, { borderColor: theme.colors.border }]} onPress={handleDisconnect}>
@@ -76,7 +80,7 @@ export default function SettingsScreen() {
               {connected.map((id, i) => (
                 <View key={id}>
                   {i > 0 && <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />}
-                  <Row label={id} value="connected" theme={theme} />
+                  <Row label={id} value={providerAuthLabel(providerAuth, id)} theme={theme} />
                 </View>
               ))}
             </View>
@@ -93,6 +97,16 @@ export default function SettingsScreen() {
       </ScrollView>
     </View>
   )
+}
+
+function providerAuthLabel(
+  auth: Record<string, Array<{ type: string; label: string }>> | null,
+  providerID: string,
+): string {
+  const methods = auth?.[providerID] ?? []
+  if (methods.length === 0) return "connected"
+  const types = Array.from(new Set(methods.map((m) => m.type)))
+  return `connected (${types.join(", ")})`
 }
 
 function Row({ label, value, theme }: { label: string; value: string; theme: Theme }) {

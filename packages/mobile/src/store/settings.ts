@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import { create as createStore } from "zustand"
-import type { Config, ProviderListResponse } from "@opencode-ai/sdk/client"
+import type { Config, ProviderAuthResponse, ProviderListResponse } from "@opencode-ai/sdk/client"
 import { client } from "../api/client"
 
 type ModelKey = { providerID: string; modelID: string }
@@ -9,10 +9,12 @@ type Appearance = "light" | "dark" | "system"
 type SettingsState = {
   config: Config | null
   providerData: ProviderListResponse | null
+  providerAuth: ProviderAuthResponse | null
   model: ModelKey | null
   appearance: Appearance
   fetchConfig: () => Promise<void>
   fetchProviders: () => Promise<void>
+  fetchProviderAuth: () => Promise<void>
   setModel: (m: ModelKey | null) => void
   setAppearance: (a: Appearance) => void
   restoreAppearance: () => Promise<void>
@@ -31,9 +33,10 @@ export function modelName(state: SettingsState): string {
   return state.model.modelID
 }
 
-export const useSettings = createStore<SettingsState>((set) => ({
+export const useSettings = createStore<SettingsState>((set, get) => ({
   config: null,
   providerData: null,
+  providerAuth: null,
   model: null,
   appearance: "system",
 
@@ -60,12 +63,35 @@ export const useSettings = createStore<SettingsState>((set) => ({
             console.log(`[providers] ${p.id}: ${keys.length} models, ${toolCall.length} with tool_call`)
           }
         }
-        set({ providerData: result.data })
+        const selected = get().model
+        const providerData = result.data
+        let nextModel = selected
+        if (selected) {
+          const provider = providerData.all.find((item) => item.id === selected.providerID)
+          const connected = providerData.connected.includes(selected.providerID)
+          const exists = !!provider?.models?.[selected.modelID]
+          if (!connected || !exists) {
+            nextModel = null
+            AsyncStorage.removeItem(MODEL_KEY)
+          }
+        }
+        set({ providerData, model: nextModel })
       } else if (__DEV__) {
         console.warn("[providers] no data in response", result)
       }
     } catch (e) {
       if (__DEV__) console.warn("[providers] fetch failed:", e)
+    }
+  },
+
+  fetchProviderAuth: async () => {
+    try {
+      const result = await client().provider.auth()
+      if (result.data) {
+        set({ providerAuth: result.data })
+      }
+    } catch {
+      // ignore
     }
   },
 

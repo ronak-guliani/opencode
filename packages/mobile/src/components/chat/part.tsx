@@ -1,8 +1,23 @@
 import { memo, useState, useCallback } from "react"
-import { View, Text, Pressable, StyleSheet, LayoutAnimation } from "react-native"
-import type { Part, TextPart, ToolPart } from "@opencode-ai/sdk/client"
+import { View, Text, Pressable, StyleSheet, LayoutAnimation, Linking } from "react-native"
+import type {
+  AgentPart,
+  FilePart,
+  Part,
+  PatchPart,
+  ReasoningPart,
+  RetryPart,
+  SnapshotPart,
+  StepFinishPart,
+  StepStartPart,
+  TextPart,
+  ToolPart,
+} from "@opencode-ai/sdk/client"
 import { useTheme } from "../../theme"
 import { MarkdownRenderer } from "../markdown/renderer"
+
+type SubtaskPart = Extract<Part, { type: "subtask" }>
+type CompactionPart = Extract<Part, { type: "compaction" }>
 
 type Props = {
   part: Part
@@ -13,14 +28,28 @@ export const PartRenderer = memo(function PartRenderer({ part, isUser }: Props) 
   switch (part.type) {
     case "text":
       return <TextPartView part={part} isUser={isUser} />
+    case "reasoning":
+      return <ReasoningPartView part={part} />
     case "tool":
       return <ToolPartView part={part} />
+    case "file":
+      return <FilePartView part={part} />
     case "step-start":
+      return <StepStartPartView part={part} />
     case "step-finish":
+      return <StepFinishPartView part={part} />
     case "snapshot":
+      return <SnapshotPartView part={part} />
     case "patch":
+      return <PatchPartView part={part} />
+    case "agent":
+      return <AgentPartView part={part} />
+    case "retry":
+      return <RetryPartView part={part} />
+    case "subtask":
+      return <SubtaskPartView part={part} />
     case "compaction":
-      return null
+      return <CompactionPartView part={part} />
     default:
       return null
   }
@@ -35,6 +64,19 @@ function TextPartView({ part, isUser }: { part: TextPart; isUser: boolean }) {
   }
 
   return <MarkdownRenderer>{part.text}</MarkdownRenderer>
+}
+
+function ReasoningPartView({ part }: { part: ReasoningPart }) {
+  const theme = useTheme()
+  const text = part.text?.trim()
+  if (!text) return null
+
+  return (
+    <View style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+      <Text style={[styles.infoTitle, { color: theme.colors.textSecondary }]}>Reasoning</Text>
+      <MarkdownRenderer>{text}</MarkdownRenderer>
+    </View>
+  )
 }
 
 function ToolPartView({ part }: { part: ToolPart }) {
@@ -118,6 +160,26 @@ function ToolPartView({ part }: { part: ToolPart }) {
             </View>
           )}
 
+          {status === "completed" &&
+            "attachments" in part.state &&
+            Array.isArray(part.state.attachments) &&
+            part.state.attachments.length > 0 && (
+              <View style={styles.toolSection}>
+                <Text style={[styles.toolLabel, { color: theme.colors.textTertiary }]}>Attachments</Text>
+                {part.state.attachments.map((attachment) => (
+                  <Pressable
+                    key={attachment.id}
+                    onPress={() => Linking.openURL(attachment.url).catch(() => {})}
+                    style={[styles.attachment, { borderColor: theme.colors.border }]}
+                  >
+                    <Text style={[styles.attachmentText, { color: theme.colors.link }]} numberOfLines={1}>
+                      {attachment.filename || attachment.source?.path || attachment.url}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
           {status === "error" && "error" in part.state && (
             <View style={styles.toolSection}>
               <Text style={[styles.toolLabel, { color: theme.colors.error }]}>Error</Text>
@@ -130,6 +192,129 @@ function ToolPartView({ part }: { part: ToolPart }) {
       )}
     </Pressable>
   )
+}
+
+function FilePartView({ part }: { part: FilePart }) {
+  const theme = useTheme()
+  const name = part.filename || part.source?.path?.split("/").pop() || "Attached file"
+  const sourceLabel = part.source
+    ? part.source.type === "symbol"
+      ? `${part.source.path} · ${part.source.name}`
+      : part.source.path
+    : part.mime
+
+  return (
+    <Pressable
+      onPress={() => Linking.openURL(part.url).catch(() => {})}
+      style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+    >
+      <Text style={[styles.infoTitle, { color: theme.colors.text }]}>File</Text>
+      <Text style={[styles.infoBody, { color: theme.colors.text }]} numberOfLines={1}>
+        {name}
+      </Text>
+      <Text style={[styles.infoSubtle, { color: theme.colors.textTertiary }]} numberOfLines={1}>
+        {sourceLabel}
+      </Text>
+      {part.source?.text?.value ? (
+        <Text
+          style={[
+            styles.infoCode,
+            {
+              backgroundColor: theme.colors.codeBackground,
+              color: theme.colors.codeText,
+            },
+          ]}
+          numberOfLines={8}
+        >
+          {part.source.text.value}
+        </Text>
+      ) : null}
+      <Text style={[styles.infoLink, { color: theme.colors.link }]}>Open attachment</Text>
+    </Pressable>
+  )
+}
+
+function StepStartPartView({ part }: { part: StepStartPart }) {
+  return <InfoPart title="Step started" detail={part.snapshot ? `Snapshot: ${short(part.snapshot)}` : "Running..."} />
+}
+
+function StepFinishPartView({ part }: { part: StepFinishPart }) {
+  const tokens = part.tokens.input + part.tokens.output + part.tokens.reasoning
+  return (
+    <InfoPart
+      title="Step finished"
+      detail={`${part.reason}${tokens > 0 ? ` · ${tokens} tokens` : ""}${part.cost ? ` · $${part.cost.toFixed(4)}` : ""}`}
+    />
+  )
+}
+
+function SnapshotPartView({ part }: { part: SnapshotPart }) {
+  return <InfoPart title="Snapshot" detail={short(part.snapshot)} />
+}
+
+function PatchPartView({ part }: { part: PatchPart }) {
+  const theme = useTheme()
+  const visible = part.files.slice(0, 8)
+  const remaining = Math.max(0, part.files.length - visible.length)
+
+  return (
+    <View style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+      <Text style={[styles.infoTitle, { color: theme.colors.text }]}>Patch</Text>
+      <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>
+        {part.files.length} file{part.files.length === 1 ? "" : "s"} changed
+      </Text>
+      {visible.map((file) => (
+        <Text key={`${part.id}:${file}`} style={[styles.infoPath, { color: theme.colors.text }]} numberOfLines={1}>
+          {file}
+        </Text>
+      ))}
+      {remaining > 0 && (
+        <Text style={[styles.infoSubtle, { color: theme.colors.textTertiary }]}>
+          +{remaining} more file{remaining === 1 ? "" : "s"}
+        </Text>
+      )}
+    </View>
+  )
+}
+
+function AgentPartView({ part }: { part: AgentPart }) {
+  return <InfoPart title="Agent" detail={part.name} />
+}
+
+function RetryPartView({ part }: { part: RetryPart }) {
+  const error = part.error?.data?.message || "Unknown error"
+  return <InfoPart title={`Retry #${part.attempt}`} detail={error} />
+}
+
+function SubtaskPartView({ part }: { part: SubtaskPart }) {
+  const theme = useTheme()
+  return (
+    <View style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+      <Text style={[styles.infoTitle, { color: theme.colors.text }]}>Subtask</Text>
+      <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{part.description}</Text>
+      {part.prompt ? <MarkdownRenderer>{part.prompt}</MarkdownRenderer> : null}
+      <Text style={[styles.infoSubtle, { color: theme.colors.textTertiary }]}>Agent: {part.agent}</Text>
+    </View>
+  )
+}
+
+function CompactionPartView({ part }: { part: CompactionPart }) {
+  return <InfoPart title="Context compacted" detail={part.auto ? "Automatic compaction applied." : "Manual compaction applied."} />
+}
+
+function InfoPart({ title, detail }: { title: string; detail: string }) {
+  const theme = useTheme()
+  return (
+    <View style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+      <Text style={[styles.infoTitle, { color: theme.colors.text }]}>{title}</Text>
+      <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{detail}</Text>
+    </View>
+  )
+}
+
+function short(value: string) {
+  if (value.length <= 32) return value
+  return `${value.slice(0, 16)}...${value.slice(-8)}`
 }
 
 function formatInput(input: Record<string, unknown>): string {
@@ -152,6 +337,40 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     marginVertical: 4,
     overflow: "hidden",
+  },
+  infoCard: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    padding: 10,
+    marginVertical: 4,
+    gap: 6,
+  },
+  infoTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  infoBody: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  infoSubtle: {
+    fontSize: 11,
+  },
+  infoPath: {
+    fontSize: 12,
+  },
+  infoCode: {
+    fontFamily: "Menlo",
+    fontSize: 12,
+    lineHeight: 17,
+    borderRadius: 8,
+    padding: 8,
+  },
+  infoLink: {
+    fontSize: 12,
+    fontWeight: "600",
   },
   toolHeader: {
     flexDirection: "row",
@@ -184,6 +403,15 @@ const styles = StyleSheet.create({
   },
   toolSection: {
     gap: 4,
+  },
+  attachment: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  attachmentText: {
+    fontSize: 12,
   },
   toolLabel: {
     fontSize: 11,

@@ -6,6 +6,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller"
 import { StyleSheet } from "react-native"
 import { useConnection } from "../src/store/connection"
 import { useSettings } from "../src/store/settings"
+import { bootstrap } from "../src/api/bootstrap"
 
 export default function RootLayout() {
   const [ready, setReady] = useState(false)
@@ -13,8 +14,21 @@ export default function RootLayout() {
   const restoreAppearance = useSettings((s) => s.restoreAppearance)
 
   useEffect(() => {
-    Promise.all([restore(), restoreAppearance()]).finally(() => setReady(true))
-  }, [])
+    let mounted = true
+    ;(async () => {
+      try {
+        const [restored] = await Promise.all([restore(), restoreAppearance()])
+        if (restored) {
+          await bootstrap()
+        }
+      } finally {
+        if (mounted) setReady(true)
+      }
+    })()
+    return () => {
+      mounted = false
+    }
+  }, [restore, restoreAppearance])
 
   if (!ready) return null
 

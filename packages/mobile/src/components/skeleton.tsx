@@ -1,6 +1,13 @@
 import { useEffect } from "react"
 import { View, StyleSheet, type ViewProps, type DimensionValue } from "react-native"
-import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing } from "react-native-reanimated"
+import Animated, {
+  cancelAnimation,
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withTiming,
+  Easing,
+} from "react-native-reanimated"
 import { useTheme } from "../theme"
 
 const AnimatedView = Animated.View as React.ComponentType<ViewProps & { style?: unknown }>
@@ -17,7 +24,10 @@ export function Skeleton({ width = "100%", height = 16, radius = 6 }: Props) {
 
   useEffect(() => {
     opacity.value = withRepeat(withTiming(0.7, { duration: 800, easing: Easing.inOut(Easing.ease) }), -1, true)
-  }, [])
+    return () => {
+      cancelAnimation(opacity)
+    }
+  }, [opacity])
 
   const style = useAnimatedStyle(() => ({
     opacity: opacity.value,

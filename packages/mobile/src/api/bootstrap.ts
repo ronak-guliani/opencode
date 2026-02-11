@@ -1,7 +1,7 @@
-import { client } from "./client"
 import { useSessions } from "../store/sessions"
 import { useSettings } from "../store/settings"
-import { subscribe } from "./events"
+import { useRequests } from "../store/requests"
+import { subscribe, unsubscribe } from "./events"
 
 type BootstrapStatus = "loading" | "partial" | "complete" | "error"
 
@@ -13,17 +13,23 @@ type BootstrapResult = {
 export async function bootstrap(): Promise<BootstrapResult> {
   try {
     // Phase 1 — blocking
-    const [providers, config] = await Promise.all([
+    await Promise.all([
       useSettings.getState().fetchProviders(),
+      useSettings.getState().fetchProviderAuth(),
       useSettings.getState().fetchConfig(),
     ])
 
     // Phase 2 — non-blocking (load in background)
-    Promise.all([useSessions.getState().fetch(), useSessions.getState().fetchStatuses()]).catch(() => {
+    Promise.all([
+      useSessions.getState().fetch(),
+      useSessions.getState().fetchStatuses(),
+      useRequests.getState().refresh(),
+    ]).catch(() => {
       // non-critical
     })
 
-    // Start SSE
+    // Start SSE with current connection headers.
+    unsubscribe()
     subscribe()
 
     return { status: "complete" }

@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react"
+import { useState, useCallback, useRef, useEffect } from "react"
 import { View, TextInput, Pressable, Text, StyleSheet, Platform } from "react-native"
 import { KeyboardStickyView } from "react-native-keyboard-controller"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
@@ -6,6 +6,7 @@ import { LiquidGlassContainerView, LiquidGlassView, isLiquidGlassSupported } fro
 import * as Haptics from "expo-haptics"
 import { useRouter } from "expo-router"
 import { useMessages } from "../../../src/store/messages"
+import { useSessions } from "../../../src/store/sessions"
 import { ModelPicker, ModelPickerTrigger } from "../../../src/components/model-picker"
 import { useTheme } from "../../../src/theme"
 
@@ -14,10 +15,15 @@ export default function SessionIndex() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const sendNew = useMessages((s) => s.sendNew)
+  const select = useSessions((s) => s.select)
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
   const inputRef = useRef<TextInput>(null)
   const [pickerVisible, setPickerVisible] = useState(false)
+
+  useEffect(() => {
+    select(null)
+  }, [select])
 
   const handleSend = useCallback(async () => {
     const content = text.trim()
@@ -32,7 +38,7 @@ export default function SessionIndex() {
       setText(content)
       setSending(false)
     }
-  }, [text, sending])
+  }, [text, sending, sendNew, router])
 
   const Sticky = KeyboardStickyView as React.ComponentType<{
     offset?: { closed?: number; opened?: number }
@@ -90,24 +96,26 @@ export default function SessionIndex() {
             },
           ]}
         >
-          <ModelPickerTrigger onPress={() => setPickerVisible(true)} />
           {isLiquidGlassSupported ? (
             <GlassContainer spacing={8} style={styles.glassRow}>
               <Glass interactive style={[styles.glassInput, { borderRadius: theme.radii.lg }]}>
-                <TextInput
-                  ref={inputRef}
-                  style={[styles.input, { color: theme.colors.text }]}
-                  value={text}
-                  onChangeText={setText}
-                  placeholder="Send a message..."
-                  placeholderTextColor={theme.colors.textTertiary}
-                  multiline
-                  maxLength={100000}
-                  editable={!sending}
-                  returnKeyType="default"
-                  blurOnSubmit={false}
-                  autoFocus
-                />
+                <View style={styles.inputContent}>
+                  <ModelPickerTrigger onPress={() => setPickerVisible(true)} />
+                  <TextInput
+                    ref={inputRef}
+                    style={[styles.input, { color: theme.colors.text }]}
+                    value={text}
+                    onChangeText={setText}
+                    placeholder="Send a message..."
+                    placeholderTextColor={theme.colors.textTertiary}
+                    multiline
+                    maxLength={100000}
+                    editable={!sending}
+                    returnKeyType="default"
+                    blurOnSubmit={false}
+                    autoFocus
+                  />
+                </View>
               </Glass>
               <Glass interactive style={styles.glassSend}>
                 {sendButton}
@@ -124,20 +132,23 @@ export default function SessionIndex() {
                 },
               ]}
             >
-              <TextInput
-                ref={inputRef}
-                style={[styles.input, { color: theme.colors.text }]}
-                value={text}
-                onChangeText={setText}
-                placeholder="Send a message..."
-                placeholderTextColor={theme.colors.textTertiary}
-                multiline
-                maxLength={100000}
-                editable={!sending}
-                returnKeyType="default"
-                blurOnSubmit={false}
-                autoFocus
-              />
+              <View style={styles.inputContent}>
+                <ModelPickerTrigger onPress={() => setPickerVisible(true)} />
+                <TextInput
+                  ref={inputRef}
+                  style={[styles.input, { color: theme.colors.text }]}
+                  value={text}
+                  onChangeText={setText}
+                  placeholder="Send a message..."
+                  placeholderTextColor={theme.colors.textTertiary}
+                  multiline
+                  maxLength={100000}
+                  editable={!sending}
+                  returnKeyType="default"
+                  blurOnSubmit={false}
+                  autoFocus
+                />
+              </View>
               {sendButton}
             </View>
           )}
@@ -190,8 +201,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     gap: 8,
   },
-  input: {
+  inputContent: {
     flex: 1,
+  },
+  input: {
     fontSize: 15,
     lineHeight: 22,
     minHeight: 36,
