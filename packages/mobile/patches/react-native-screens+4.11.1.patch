@@ -1,0 +1,10 @@
+diff --git a/node_modules/react-native-screens/ios/RNSScreenStackHeaderConfig.mm b/node_modules/react-native-screens/ios/RNSScreenStackHeaderConfig.mm
+index 1234567..89abcdef 100644
+--- a/node_modules/react-native-screens/ios/RNSScreenStackHeaderConfig.mm
++++ b/node_modules/react-native-screens/ios/RNSScreenStackHeaderConfig.mm
+@@ -1,4 +1,5 @@
+ #import "RNSScreenStackHeaderConfig.h"
++#include <utility>
+ 
+ #import <React/RCTBridge.h>
+ #import <React/RCTFont.h>

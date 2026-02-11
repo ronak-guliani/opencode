@@ -1,0 +1,17 @@
+diff --git a/node_modules/react-native/Libraries/Text/TextInput/Multiline/RCTUITextView.mm b/node_modules/react-native/Libraries/Text/TextInput/Multiline/RCTUITextView.mm
+index 1234567..89abcdef 100644
+--- a/node_modules/react-native/Libraries/Text/TextInput/Multiline/RCTUITextView.mm
++++ b/node_modules/react-native/Libraries/Text/TextInput/Multiline/RCTUITextView.mm
+@@ -54,6 +54,12 @@
+     self.textContainer.lineFragmentPadding = 0;
+     self.scrollsToTop = NO;
+     self.scrollEnabled = YES;
++
++    // OpenCode: disable scroll indicators and bounce for chat-style input
++    self.showsVerticalScrollIndicator = NO;
++    self.showsHorizontalScrollIndicator = NO;
++    self.bounces = NO;
++    self.alwaysBounceVertical = NO;
+     _initialValueLeadingBarButtonGroups = nil;
+     _initialValueTrailingBarButtonGroups = nil;
+   }
