@@ -14,6 +14,7 @@ import { Agent } from "../../agent/agent"
 import { Snapshot } from "@/snapshot"
 import { Log } from "../../util/log"
 import { PermissionNext } from "@/permission/next"
+import { Identifier } from "@/id/id"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 
@@ -571,6 +572,9 @@ export const SessionRoutes = lazy(() =>
         "query",
         z.object({
           limit: z.coerce.number().optional(),
+          beforeMessageID: Identifier.schema("message").optional(),
+          afterMessageID: Identifier.schema("message").optional(),
+          compact: z.coerce.boolean().optional(),
         }),
       ),
       async (c) => {
@@ -578,6 +582,9 @@ export const SessionRoutes = lazy(() =>
         const messages = await Session.messages({
           sessionID: c.req.valid("param").sessionID,
           limit: query.limit,
+          beforeMessageID: query.beforeMessageID,
+          afterMessageID: query.afterMessageID,
+          compact: query.compact,
         })
         return c.json(messages)
       },

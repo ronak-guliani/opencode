@@ -22,16 +22,23 @@ type CompactionPart = Extract<Part, { type: "compaction" }>
 type Props = {
   part: Part
   isUser: boolean
+  renderMarkdown?: boolean
+  onHydrateMessage?: (messageID: string) => void
 }
 
-export const PartRenderer = memo(function PartRenderer({ part, isUser }: Props) {
+export const PartRenderer = memo(function PartRenderer({
+  part,
+  isUser,
+  renderMarkdown = true,
+  onHydrateMessage,
+}: Props) {
   switch (part.type) {
     case "text":
-      return <TextPartView part={part} isUser={isUser} />
+      return <TextPartView part={part} isUser={isUser} renderMarkdown={renderMarkdown} />
     case "reasoning":
-      return <ReasoningPartView part={part} />
+      return <ReasoningPartView part={part} renderMarkdown={renderMarkdown} />
     case "tool":
-      return <ToolPartView part={part} />
+      return <ToolPartView part={part} onHydrateMessage={onHydrateMessage} />
     case "file":
       return <FilePartView part={part} />
     case "step-start":
@@ -47,7 +54,7 @@ export const PartRenderer = memo(function PartRenderer({ part, isUser }: Props) 
     case "retry":
       return <RetryPartView part={part} />
     case "subtask":
-      return <SubtaskPartView part={part} />
+      return <SubtaskPartView part={part} renderMarkdown={renderMarkdown} />
     case "compaction":
       return <CompactionPartView part={part} />
     default:
@@ -55,7 +62,7 @@ export const PartRenderer = memo(function PartRenderer({ part, isUser }: Props) 
   }
 })
 
-function TextPartView({ part, isUser }: { part: TextPart; isUser: boolean }) {
+function TextPartView({ part, isUser, renderMarkdown }: { part: TextPart; isUser: boolean; renderMarkdown: boolean }) {
   const theme = useTheme()
   if (!part.text) return null
 
@@ -63,10 +70,18 @@ function TextPartView({ part, isUser }: { part: TextPart; isUser: boolean }) {
     return <Text style={[styles.text, { color: theme.colors.userBubbleText }]}>{part.text}</Text>
   }
 
+  if (!renderMarkdown) {
+    return (
+      <Text style={[styles.text, { color: theme.colors.textSecondary }]} numberOfLines={8}>
+        {part.text}
+      </Text>
+    )
+  }
+
   return <MarkdownRenderer>{part.text}</MarkdownRenderer>
 }
 
-function ReasoningPartView({ part }: { part: ReasoningPart }) {
+function ReasoningPartView({ part, renderMarkdown }: { part: ReasoningPart; renderMarkdown: boolean }) {
   const theme = useTheme()
   const text = part.text?.trim()
   if (!text) return null
@@ -74,21 +89,40 @@ function ReasoningPartView({ part }: { part: ReasoningPart }) {
   return (
     <View style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
       <Text style={[styles.infoTitle, { color: theme.colors.textSecondary }]}>Reasoning</Text>
-      <MarkdownRenderer>{text}</MarkdownRenderer>
+      {renderMarkdown ? (
+        <MarkdownRenderer>{text}</MarkdownRenderer>
+      ) : (
+        <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]} numberOfLines={8}>
+          {text}
+        </Text>
+      )}
     </View>
   )
 }
 
-function ToolPartView({ part }: { part: ToolPart }) {
+function ToolPartView({ part, onHydrateMessage }: { part: ToolPart; onHydrateMessage?: (messageID: string) => void }) {
   const theme = useTheme()
   const [expanded, setExpanded] = useState(false)
   const status = part.state.status
   const title = "title" in part.state ? part.state.title : part.tool
+  const requestHydration = useCallback(() => {
+    if (!onHydrateMessage) return
+    onHydrateMessage(part.messageID)
+  }, [onHydrateMessage, part.messageID])
 
   const toggle = useCallback(() => {
+    const opening = !expanded
+    if (
+      opening &&
+      status === "completed" &&
+      "outputTruncated" in part.state &&
+      part.state.outputTruncated
+    ) {
+      requestHydration()
+    }
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut)
     setExpanded((v) => !v)
-  }, [])
+  }, [expanded, part.state, requestHydration, status])
 
   const dot =
     status === "completed"
@@ -105,6 +139,11 @@ function ToolPartView({ part }: { part: ToolPart }) {
         ? `${((part.state.time.end - part.state.time.start) / 1000).toFixed(1)}s`
         : null
       : null
+
+  const truncatedOutput =
+    status === "completed" && "outputTruncated" in part.state && typeof part.state.outputTruncated === "boolean"
+      ? part.state.outputTruncated
+      : false
 
   return (
     <Pressable
@@ -157,6 +196,11 @@ function ToolPartView({ part }: { part: ToolPart }) {
               >
                 {part.state.output.length > 2000 ? part.state.output.slice(0, 2000) + "\n..." : part.state.output}
               </Text>
+              {truncatedOutput && (
+                <Pressable onPress={requestHydration} style={styles.truncatedHintWrap}>
+                  <Text style={[styles.truncatedHint, { color: theme.colors.link }]}>Tap to load full output</Text>
+                </Pressable>
+              )}
             </View>
           )}
 
@@ -286,20 +330,33 @@ function RetryPartView({ part }: { part: RetryPart }) {
   return <InfoPart title={`Retry #${part.attempt}`} detail={error} />
 }
 
-function SubtaskPartView({ part }: { part: SubtaskPart }) {
+function SubtaskPartView({ part, renderMarkdown }: { part: SubtaskPart; renderMarkdown: boolean }) {
   const theme = useTheme()
   return (
     <View style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
       <Text style={[styles.infoTitle, { color: theme.colors.text }]}>Subtask</Text>
       <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{part.description}</Text>
-      {part.prompt ? <MarkdownRenderer>{part.prompt}</MarkdownRenderer> : null}
+      {part.prompt ? (
+        renderMarkdown ? (
+          <MarkdownRenderer>{part.prompt}</MarkdownRenderer>
+        ) : (
+          <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]} numberOfLines={8}>
+            {part.prompt}
+          </Text>
+        )
+      ) : null}
       <Text style={[styles.infoSubtle, { color: theme.colors.textTertiary }]}>Agent: {part.agent}</Text>
     </View>
   )
 }
 
 function CompactionPartView({ part }: { part: CompactionPart }) {
-  return <InfoPart title="Context compacted" detail={part.auto ? "Automatic compaction applied." : "Manual compaction applied."} />
+  return (
+    <InfoPart
+      title="Context compacted"
+      detail={part.auto ? "Automatic compaction applied." : "Manual compaction applied."}
+    />
+  )
 }
 
 function InfoPart({ title, detail }: { title: string; detail: string }) {
@@ -430,5 +487,12 @@ const styles = StyleSheet.create({
   toolError: {
     fontSize: 13,
     lineHeight: 18,
+  },
+  truncatedHintWrap: {
+    paddingTop: 2,
+  },
+  truncatedHint: {
+    fontSize: 12,
+    fontWeight: "500",
   },
 })

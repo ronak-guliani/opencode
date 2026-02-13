@@ -4,13 +4,23 @@ import { useSessions } from "../store/sessions"
 import { useMessages } from "../store/messages"
 import { useConnection } from "../store/connection"
 
-// Set to true temporarily when debugging SSE issues on device
-const DEBUG = __DEV__
+// Opt-in debug flag for SSE diagnostics on device:
+// globalThis.__OPENCODE_MOBILE_SSE_DEBUG__ = true
+const DEBUG =
+  __DEV__ && (globalThis as { __OPENCODE_MOBILE_SSE_DEBUG__?: boolean }).__OPENCODE_MOBILE_SSE_DEBUG__ === true
 
 type Subscriber = {
   active: boolean
   xhr: XMLHttpRequest | null
 }
+
+type MessageEvent =
+  | Extract<Event, { type: "message.updated" }>
+  | Extract<Event, { type: "message.removed" }>
+  | Extract<Event, { type: "message.part.updated" }>
+  | Extract<Event, { type: "message.part.removed" }>
+
+const EVENT_FLUSH_MS = 24
 
 let subscriber: Subscriber | null = null
 
@@ -41,35 +51,42 @@ function eventKey(event: Event): string | null {
   }
 }
 
-function apply(event: Event) {
+function applyBatch(events: Event[]) {
+  if (events.length === 0) return
+
   const sessions = useSessions.getState()
   const messages = useMessages.getState()
+  const messageEvents: MessageEvent[] = []
 
-  switch (event.type) {
-    case "session.created":
-    case "session.updated":
-      sessions._upsert(event.properties.info)
-      break
-    case "session.deleted":
-      sessions._remove(event.properties.info.id)
-      break
-    case "session.status":
-      sessions._setStatus(event.properties.sessionID, event.properties.status)
-      break
-    case "message.updated":
-      if (DEBUG) console.log("[sse] message.updated", event.properties.info.id, event.properties.info.role)
-      messages._upsertMessage(event.properties.info.sessionID, event.properties.info)
-      break
-    case "message.removed":
-      messages._removeMessage(event.properties.sessionID, event.properties.messageID)
-      break
-    case "message.part.updated":
-      if (DEBUG) console.log("[sse] part.updated", event.properties.part.id, event.properties.part.type)
-      messages._upsertPart(event.properties.part.messageID, event.properties.part)
-      break
-    case "message.part.removed":
-      messages._removePart(event.properties.messageID, event.properties.partID)
-      break
+  for (const event of events) {
+    switch (event.type) {
+      case "session.created":
+      case "session.updated":
+        sessions._upsert(event.properties.info)
+        break
+      case "session.deleted":
+        sessions._remove(event.properties.info.id)
+        break
+      case "session.status":
+        sessions._setStatus(event.properties.sessionID, event.properties.status)
+        break
+      case "message.updated":
+      case "message.removed":
+      case "message.part.updated":
+      case "message.part.removed":
+        if (DEBUG && event.type === "message.updated") {
+          console.log("[sse] message.updated", event.properties.info.id, event.properties.info.role)
+        }
+        if (DEBUG && event.type === "message.part.updated") {
+          console.log("[sse] part.updated", event.properties.part.id, event.properties.part.type)
+        }
+        messageEvents.push(event)
+        break
+    }
+  }
+
+  if (messageEvents.length > 0) {
+    messages._applyEvents(messageEvents)
   }
 }
 
@@ -117,9 +134,7 @@ function connect(current: Subscriber): Promise<void> {
 
     function flush() {
       const batch = queue.splice(0)
-      for (const event of batch) {
-        apply(event)
-      }
+      applyBatch(batch)
       timer = null
     }
 
@@ -170,7 +185,7 @@ function connect(current: Subscriber): Promise<void> {
       for (const event of events) {
         if (!current.active) break
         coalesce(queue, event)
-        if (!timer) timer = setTimeout(flush, 16)
+        if (!timer) timer = setTimeout(flush, EVENT_FLUSH_MS)
       }
     }
 
@@ -191,9 +206,7 @@ function connect(current: Subscriber): Promise<void> {
       // Flush any remaining buffer
       if (buffer.trim()) {
         const { events } = parseSSE(buffer + "\n\n")
-        for (const event of events) {
-          apply(event)
-        }
+        applyBatch(events)
       }
       if (timer) {
         clearTimeout(timer)

@@ -163,6 +163,7 @@ export type TextPart = {
   messageID: string
   type: "text"
   text: string
+  truncated?: boolean
   synthetic?: boolean
   ignored?: boolean
   time?: {
@@ -180,6 +181,7 @@ export type ReasoningPart = {
   messageID: string
   type: "reasoning"
   text: string
+  truncated?: boolean
   metadata?: {
     [key: string]: unknown
   }
@@ -193,6 +195,7 @@ export type FilePartSourceText = {
   value: string
   start: number
   end: number
+  truncated?: boolean
 }
 
 export type FileSource = {
@@ -262,6 +265,8 @@ export type ToolStateCompleted = {
     [key: string]: unknown
   }
   output: string
+  outputTruncated?: boolean
+  outputBytes?: number
   title: string
   metadata: {
     [key: string]: unknown
@@ -2553,6 +2558,9 @@ export type SessionMessagesData = {
   query?: {
     directory?: string
     limit?: number
+    beforeMessageID?: string
+    afterMessageID?: string
+    compact?: boolean
   }
   url: "/session/{id}/message"
 }

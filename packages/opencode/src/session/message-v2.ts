@@ -65,6 +65,7 @@ export namespace MessageV2 {
   export const TextPart = PartBase.extend({
     type: z.literal("text"),
     text: z.string(),
+    truncated: z.boolean().optional(),
     synthetic: z.boolean().optional(),
     ignored: z.boolean().optional(),
     time: z
@@ -82,6 +83,7 @@ export namespace MessageV2 {
   export const ReasoningPart = PartBase.extend({
     type: z.literal("reasoning"),
     text: z.string(),
+    truncated: z.boolean().optional(),
     metadata: z.record(z.string(), z.any()).optional(),
     time: z.object({
       start: z.number(),
@@ -98,6 +100,7 @@ export namespace MessageV2 {
         value: z.string(),
         start: z.number().int(),
         end: z.number().int(),
+        truncated: z.boolean().optional(),
       })
       .meta({
         ref: "FilePartSourceText",
@@ -255,6 +258,8 @@ export namespace MessageV2 {
       status: z.literal("completed"),
       input: z.record(z.string(), z.any()),
       output: z.string(),
+      outputTruncated: z.boolean().optional(),
+      outputBytes: z.number().optional(),
       title: z.string(),
       metadata: z.record(z.string(), z.any()),
       time: z.object({
@@ -439,6 +444,97 @@ export namespace MessageV2 {
     parts: z.array(Part),
   })
   export type WithParts = z.infer<typeof WithParts>
+
+  export type CompactOptions = {
+    textLimit?: number
+    reasoningLimit?: number
+    toolOutputLimit?: number
+    fileSourceTextLimit?: number
+  }
+
+  const DEFAULT_COMPACT_OPTIONS: Required<CompactOptions> = {
+    textLimit: 8_000,
+    reasoningLimit: 6_000,
+    toolOutputLimit: 2_000,
+    fileSourceTextLimit: 2_000,
+  }
+
+  function truncate(value: string, limit: number) {
+    if (value.length <= limit) return { value, truncated: false }
+    return {
+      value: `${value.slice(0, limit)}\n...[truncated]`,
+      truncated: true,
+    }
+  }
+
+  export function compactParts(parts: Part[], options?: CompactOptions): Part[] {
+    const limits = { ...DEFAULT_COMPACT_OPTIONS, ...options }
+
+    return parts.map((part) => {
+      if (part.type === "text") {
+        const next = truncate(part.text, limits.textLimit)
+        if (!next.truncated) return part
+        return {
+          ...part,
+          text: next.value,
+          truncated: true,
+        }
+      }
+
+      if (part.type === "reasoning") {
+        const next = truncate(part.text, limits.reasoningLimit)
+        if (!next.truncated) return part
+        return {
+          ...part,
+          text: next.value,
+          truncated: true,
+        }
+      }
+
+      if (
+        part.type === "tool" &&
+        part.state.status === "completed" &&
+        typeof part.state.output === "string" &&
+        part.state.output.length > limits.toolOutputLimit
+      ) {
+        const next = truncate(part.state.output, limits.toolOutputLimit)
+        return {
+          ...part,
+          state: {
+            ...part.state,
+            output: next.value,
+            outputTruncated: true,
+            outputBytes: part.state.output.length,
+          },
+        }
+      }
+
+      if (part.type === "file" && part.source?.text?.value) {
+        const next = truncate(part.source.text.value, limits.fileSourceTextLimit)
+        if (!next.truncated) return part
+        return {
+          ...part,
+          source: {
+            ...part.source,
+            text: {
+              ...part.source.text,
+              value: next.value,
+              truncated: true,
+            },
+          },
+        }
+      }
+
+      return part
+    })
+  }
+
+  export function compactMessage(message: WithParts, options?: CompactOptions): WithParts {
+    return {
+      info: message.info,
+      parts: compactParts(message.parts, options),
+    }
+  }
 
   export function toModelMessages(input: WithParts[], model: Provider.Model): ModelMessage[] {
     const result: UIMessage[] = []

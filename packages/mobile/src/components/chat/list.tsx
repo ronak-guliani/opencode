@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { FlatList, StyleSheet, type LayoutChangeEvent } from "react-native"
+import { StyleSheet, type LayoutChangeEvent } from "react-native"
 import type { Message } from "@opencode-ai/sdk/client"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
+import { FlashList, type ListRenderItemInfo, type ViewToken } from "@shopify/flash-list"
+import { useMessages } from "../../store/messages"
 import { useChat } from "./provider"
 import { UserMessage } from "./user-message"
 import { AssistantMessage } from "./assistant-message"
@@ -9,19 +11,30 @@ import { AssistantMessage } from "./assistant-message"
 type Props = {
   sessionId: string
   messages: Message[]
+  enableMarkdown?: boolean
 }
 
-export function MessagesList({ sessionId, messages }: Props) {
+export function MessagesList({ sessionId, messages, enableMarkdown = true }: Props) {
   const insets = useSafeAreaInsets()
   const { listRef, isAtEnd, messageCount, composerH } = useChat()
+  const loadMore = useMessages((s) => s.loadMore)
+  const loadingMap = useMessages((s) => s.loading)
+  const exhaustedMap = useMessages((s) => s.exhausted)
   const didInitialScroll = useRef(false)
   const prevCount = useRef(0)
   const raf = useRef<number | null>(null)
+  const contentHeightRef = useRef(0)
+  const layoutHeightRef = useRef(0)
+  const loadingMoreRef = useRef(false)
+  const viewableRafRef = useRef<number | null>(null)
+  const [viewableMap, setViewableMap] = useState<Record<string, true>>({})
+  const viewableRef = useRef<Record<string, true>>({})
   const [layoutHeight, setLayoutHeight] = useState(0)
   const [contentHeight, setContentHeight] = useState(0)
 
   const count = messages.length
-  const lastId = count > 0 ? messages[count - 1].id : undefined
+  const loadingSession = loadingMap[sessionId] ?? false
+  const exhaustedSession = exhaustedMap[sessionId] ?? false
   const topPadding = insets.top + 16
 
   // Blank size: when content is shorter than the visible area, pad the bottom
@@ -29,22 +42,29 @@ export function MessagesList({ sessionId, messages }: Props) {
   const composerPad = composerH || 120
   const blankSize = Math.max(0, layoutHeight - contentHeight - topPadding) + composerPad
 
-  const scheduleScrollToEnd = useCallback((animated: boolean) => {
-    if (raf.current !== null) {
-      cancelAnimationFrame(raf.current)
-      raf.current = null
-    }
-    raf.current = requestAnimationFrame(() => {
-      listRef.current?.scrollToEnd({ animated })
-      raf.current = null
-    })
-  }, [listRef])
+  const scheduleScrollToEnd = useCallback(
+    (animated: boolean) => {
+      if (raf.current !== null) {
+        cancelAnimationFrame(raf.current)
+        raf.current = null
+      }
+      raf.current = requestAnimationFrame(() => {
+        listRef.current?.scrollToEnd({ animated })
+        raf.current = null
+      })
+    },
+    [listRef],
+  )
 
   useEffect(() => {
     return () => {
       if (raf.current !== null) {
         cancelAnimationFrame(raf.current)
         raf.current = null
+      }
+      if (viewableRafRef.current !== null) {
+        cancelAnimationFrame(viewableRafRef.current)
+        viewableRafRef.current = null
       }
     }
   }, [])
@@ -53,6 +73,8 @@ export function MessagesList({ sessionId, messages }: Props) {
   useEffect(() => {
     didInitialScroll.current = false
     prevCount.current = 0
+    viewableRef.current = {}
+    setViewableMap({})
     setLayoutHeight(0)
     setContentHeight(0)
     if (raf.current !== null) {
@@ -80,19 +102,24 @@ export function MessagesList({ sessionId, messages }: Props) {
     }
   }, [count, scheduleScrollToEnd])
 
-  // Auto-scroll when new messages arrive (if user is at bottom)
   useEffect(() => {
-    if (count > prevCount.current && isAtEnd.value) {
-      scheduleScrollToEnd(true)
-    }
-    prevCount.current = count
-  }, [count, lastId, scheduleScrollToEnd])
+    loadingMoreRef.current = loadingSession
+  }, [loadingSession])
 
-  const renderItem = useCallback(({ item, index }: { item: Message; index: number }) => {
-    if (item.role === "user") return <UserMessage message={item} index={index} />
-    if (item.role === "assistant") return <AssistantMessage message={item} index={index} />
-    return null
-  }, [])
+  const renderItem = useCallback(
+    ({ item, index, target }: ListRenderItemInfo<Message>) => {
+      const isRecent = index >= count - 24
+      const isViewable = !!viewableMap[item.id]
+      const renderMarkdown = enableMarkdown && target === "Cell" && (isRecent || isViewable)
+
+      if (item.role === "user") return <UserMessage message={item} index={index} />
+      if (item.role === "assistant") {
+        return <AssistantMessage message={item} index={index} renderMarkdown={renderMarkdown} />
+      }
+      return null
+    },
+    [count, enableMarkdown, viewableMap],
+  )
 
   const keyExtractor = useCallback((item: Message) => item.id, [])
 
@@ -107,22 +134,68 @@ export function MessagesList({ sessionId, messages }: Props) {
       const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent
       const distance = contentSize.height - contentOffset.y - layoutMeasurement.height
       isAtEnd.value = distance < 150
-    },
-    [],
-  )
 
-  const handleContentSizeChange = useCallback(
-    (_w: number, h: number) => {
-      setContentHeight(h)
-      if (isAtEnd.value && count > 0) {
-        scheduleScrollToEnd(true)
+      if (
+        !loadingMoreRef.current &&
+        !exhaustedSession &&
+        contentOffset.y < 120 &&
+        contentSize.height > layoutMeasurement.height
+      ) {
+        loadingMoreRef.current = true
+        void loadMore(sessionId)
       }
     },
-    [count, scheduleScrollToEnd],
+    [loadMore, sessionId, exhaustedSession],
   )
 
+  const onStartReached = useCallback(() => {
+    if (loadingMoreRef.current || exhaustedSession) return
+    loadingMoreRef.current = true
+    void loadMore(sessionId)
+  }, [loadMore, sessionId, exhaustedSession])
+
+  const onViewableItemsChanged = useCallback(({ changed }: { changed: Array<ViewToken<Message>> }) => {
+    let next = viewableRef.current
+    let dirty = false
+    for (const token of changed) {
+      const item = token.item
+      if (!item?.id) continue
+      const currentlyVisible = !!next[item.id]
+      if (token.isViewable && !currentlyVisible) {
+        if (!dirty) next = { ...next }
+        next[item.id] = true
+        dirty = true
+      } else if (!token.isViewable && currentlyVisible) {
+        if (!dirty) next = { ...next }
+        delete next[item.id]
+        dirty = true
+      }
+    }
+    if (dirty) {
+      viewableRef.current = next
+      if (viewableRafRef.current !== null) {
+        cancelAnimationFrame(viewableRafRef.current)
+      }
+      viewableRafRef.current = requestAnimationFrame(() => {
+        setViewableMap(viewableRef.current)
+        viewableRafRef.current = null
+      })
+    }
+  }, [])
+
+  const handleContentSizeChange = useCallback((_w: number, h: number) => {
+    if (Math.abs(h - contentHeightRef.current) > 2) {
+      contentHeightRef.current = h
+      setContentHeight(h)
+    }
+  }, [])
+
   const handleLayout = useCallback((e: LayoutChangeEvent) => {
-    setLayoutHeight(e.nativeEvent.layout.height)
+    const h = e.nativeEvent.layout.height
+    if (Math.abs(h - layoutHeightRef.current) > 2) {
+      layoutHeightRef.current = h
+      setLayoutHeight(h)
+    }
   }, [])
 
   const contentContainerStyle = useMemo(
@@ -130,8 +203,16 @@ export function MessagesList({ sessionId, messages }: Props) {
     [topPadding, blankSize],
   )
 
+  // Auto-scroll only when new messages arrive and user is already at end.
+  useEffect(() => {
+    if (count > prevCount.current && isAtEnd.value) {
+      scheduleScrollToEnd(true)
+    }
+    prevCount.current = count
+  }, [count, scheduleScrollToEnd])
+
   return (
-    <FlatList
+    <FlashList
       ref={listRef}
       data={messages}
       renderItem={renderItem}
@@ -142,13 +223,22 @@ export function MessagesList({ sessionId, messages }: Props) {
       onContentSizeChange={handleContentSizeChange}
       onLayout={handleLayout}
       scrollEventThrottle={16}
+      drawDistance={600}
+      onStartReached={onStartReached}
+      onStartReachedThreshold={0.08}
+      onViewableItemsChanged={onViewableItemsChanged}
+      viewabilityConfig={{ itemVisiblePercentThreshold: 20 }}
       keyboardDismissMode="interactive"
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
-      maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-      initialNumToRender={20}
-      windowSize={7}
-      maxToRenderPerBatch={12}
+      maintainVisibleContentPosition={
+        count < 1200
+          ? {
+              autoscrollToBottomThreshold: 0.1,
+              animateAutoScrollToBottom: true,
+            }
+          : { disabled: true }
+      }
       removeClippedSubviews
     />
   )

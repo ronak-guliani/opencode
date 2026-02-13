@@ -29,6 +29,12 @@ export namespace Session {
   const parentTitlePrefix = "New session - "
   const childTitlePrefix = "Child session - "
 
+  const MessageIndex = z.object({
+    ids: Identifier.schema("message").array(),
+    updated: z.number(),
+  })
+  type MessageIndex = z.infer<typeof MessageIndex>
+
   function createDefaultTitle(isChild = false) {
     return (isChild ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString()
   }
@@ -47,6 +53,64 @@ export namespace Session {
       return `${base} (fork #${num + 1})`
     }
     return `${title} (fork #1)`
+  }
+
+  async function readMessageIndex(sessionID: string) {
+    const read = await Storage.read<MessageIndex>(["message_index", sessionID]).catch(() => undefined)
+    if (!read) return
+    return MessageIndex.parse(read)
+  }
+
+  async function rebuildMessageIndex(sessionID: string): Promise<MessageIndex> {
+    const ids = (await Storage.list(["message", sessionID]))
+      .map((item) => item.at(-1))
+      .filter((item): item is string => !!item)
+      .toSorted()
+    const index: MessageIndex = {
+      ids,
+      updated: Date.now(),
+    }
+    await Storage.write(["message_index", sessionID], index)
+    return index
+  }
+
+  async function getMessageIndex(sessionID: string): Promise<MessageIndex> {
+    const existing = await readMessageIndex(sessionID)
+    if (existing) return existing
+    return rebuildMessageIndex(sessionID)
+  }
+
+  async function appendMessageIndex(sessionID: string, messageID: string) {
+    try {
+      await Storage.update<MessageIndex>(["message_index", sessionID], (draft) => {
+        const lastID = draft.ids.at(-1)
+        if (lastID !== messageID) {
+          if (lastID && lastID < messageID) {
+            draft.ids.push(messageID)
+          } else if (!draft.ids.includes(messageID)) {
+            draft.ids.push(messageID)
+            draft.ids.sort()
+          }
+        }
+        draft.updated = Date.now()
+      })
+    } catch {
+      await Storage.write(["message_index", sessionID], {
+        ids: [messageID],
+        updated: Date.now(),
+      } satisfies MessageIndex)
+    }
+  }
+
+  async function removeMessageIndex(sessionID: string, messageID: string) {
+    try {
+      await Storage.update<MessageIndex>(["message_index", sessionID], (draft) => {
+        draft.ids = draft.ids.filter((id) => id !== messageID)
+        draft.updated = Date.now()
+      })
+    } catch {
+      // ignore missing index
+    }
   }
 
   export const Info = z
@@ -317,14 +381,60 @@ export namespace Session {
     z.object({
       sessionID: Identifier.schema("session"),
       limit: z.number().optional(),
+      beforeMessageID: Identifier.schema("message").optional(),
+      afterMessageID: Identifier.schema("message").optional(),
+      compact: z.boolean().optional(),
     }),
     async (input) => {
-      const result = [] as MessageV2.WithParts[]
-      for await (const msg of MessageV2.stream(input.sessionID)) {
-        if (input.limit && result.length >= input.limit) break
-        result.push(msg)
+      const index = await getMessageIndex(input.sessionID)
+      const ids = index.ids
+      if (ids.length === 0) return []
+
+      let start = 0
+      let end = ids.length
+
+      if (input.beforeMessageID) {
+        const beforeIndex = ids.findIndex((id) => id === input.beforeMessageID)
+        if (beforeIndex === -1) return []
+        end = beforeIndex
       }
-      result.reverse()
+
+      if (input.afterMessageID) {
+        const afterIndex = ids.findIndex((id) => id === input.afterMessageID)
+        if (afterIndex === -1) return []
+        start = afterIndex + 1
+      }
+
+      if (start > end) return []
+
+      if (input.limit && input.limit > 0) {
+        if (input.afterMessageID && !input.beforeMessageID) {
+          end = Math.min(end, start + input.limit)
+        } else {
+          start = Math.max(start, end - input.limit)
+        }
+      }
+
+      if (start >= end) return []
+
+      const result = [] as MessageV2.WithParts[]
+      const selected = ids.slice(start, end)
+      for (const messageID of selected) {
+        try {
+          const msg = await MessageV2.get({
+            sessionID: input.sessionID,
+            messageID,
+          })
+          result.push(input.compact ? MessageV2.compactMessage(msg) : msg)
+        } catch (error) {
+          if (error instanceof Storage.NotFoundError) {
+            await removeMessageIndex(input.sessionID, messageID)
+            continue
+          }
+          throw error
+        }
+      }
+
       return result
     },
   )
@@ -364,6 +474,7 @@ export namespace Session {
         }
         await Storage.remove(msg)
       }
+      await Storage.remove(["message_index", sessionID]).catch(() => {})
       await Storage.remove(["session", project.id, sessionID])
       Bus.publish(Event.Deleted, {
         info: session,
@@ -375,6 +486,7 @@ export namespace Session {
 
   export const updateMessage = fn(MessageV2.Info, async (msg) => {
     await Storage.write(["message", msg.sessionID, msg.id], msg)
+    await appendMessageIndex(msg.sessionID, msg.id)
     Bus.publish(MessageV2.Event.Updated, {
       info: msg,
     })
@@ -388,6 +500,7 @@ export namespace Session {
     }),
     async (input) => {
       await Storage.remove(["message", input.sessionID, input.messageID])
+      await removeMessageIndex(input.sessionID, input.messageID)
       Bus.publish(MessageV2.Event.Removed, {
         sessionID: input.sessionID,
         messageID: input.messageID,
