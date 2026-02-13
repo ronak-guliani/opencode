@@ -1,7 +1,7 @@
 :root {
-  --font-family-sans: "Inter", "Inter Fallback";
+  --font-family-sans: "Geist", "Geist Fallback";
   --font-family-sans--font-feature-settings: "ss03" 1;
-  --font-family-mono: "IBM Plex Mono", "IBM Plex Mono Fallback";
+  --font-family-mono: "Geist Mono", "Geist Mono Fallback";
   --font-family-mono--font-feature-settings: "ss01" 1;
 
   --font-size-small: 13px;
@@ -9,7 +9,7 @@
   --font-size-large: 16px;
   --font-size-x-large: 20px;
   --font-weight-regular: 400;
-  --font-weight-medium: 500;
+  --font-weight-medium: 600;
   --line-height-large: 150%;
   --line-height-x-large: 180%;
   --line-height-2x-large: 200%;
