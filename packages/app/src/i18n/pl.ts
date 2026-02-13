@@ -540,6 +540,7 @@ export const dict = {
   "settings.updates.action.checking": "Sprawdzanie...",
   "settings.updates.toast.latest.title": "Masz najnowszą wersję",
   "settings.updates.toast.latest.description": "Korzystasz z najnowszej wersji OpenCode.",
+  "font.option.geistMono": "Geist Mono",
   "font.option.ibmPlexMono": "IBM Plex Mono",
   "font.option.cascadiaCode": "Cascadia Code",
   "font.option.firaCode": "Fira Code",

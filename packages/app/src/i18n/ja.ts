@@ -534,6 +534,7 @@ export const dict = {
   "settings.updates.toast.latest.title": "最新です",
   "settings.updates.toast.latest.description": "OpenCode は最新バージョンです。",
 
+  "font.option.geistMono": "Geist Mono",
   "font.option.ibmPlexMono": "IBM Plex Mono",
   "font.option.cascadiaCode": "Cascadia Code",
   "font.option.firaCode": "Fira Code",

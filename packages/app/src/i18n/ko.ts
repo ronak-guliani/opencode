@@ -540,6 +540,7 @@ export const dict = {
   "settings.updates.toast.latest.title": "최신 상태입니다",
   "settings.updates.toast.latest.description": "현재 최신 버전의 OpenCode를 사용 중입니다.",
 
+  "font.option.geistMono": "Geist Mono",
   "font.option.ibmPlexMono": "IBM Plex Mono",
   "font.option.cascadiaCode": "Cascadia Code",
   "font.option.firaCode": "Fira Code",

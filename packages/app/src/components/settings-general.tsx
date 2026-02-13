@@ -116,6 +116,7 @@ export const SettingsGeneral: Component = () => {
   )
 
   const fontOptions = [
+    { value: "geist-mono", label: "font.option.geistMono" },
     { value: "ibm-plex-mono", label: "font.option.ibmPlexMono" },
     { value: "cascadia-code", label: "font.option.cascadiaCode" },
     { value: "fira-code", label: "font.option.firaCode" },
