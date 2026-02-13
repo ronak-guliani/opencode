@@ -26,7 +26,7 @@ function rules(theme: Theme) {
       <Text
         key={node.key}
         style={{
-          fontFamily: "Menlo",
+          fontFamily: "Geist Mono",
           fontSize: 13,
           backgroundColor: theme.colors.codeInline,
           color: theme.colors.codeInlineText,
