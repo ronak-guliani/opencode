@@ -24,6 +24,7 @@ export type ProjectSidebarContext = {
   onProjectMouseLeave: (worktree: string) => void
   onProjectFocus: (worktree: string) => void
   navigateToProject: (directory: string) => void
+  createSession: (directory: string) => void
   openSidebar: () => void
   closeProject: (directory: string) => void
   showEditProjectDialog: (project: LocalProject) => void
@@ -121,11 +122,10 @@ export const SortableProject = (props: {
         data-action="project-switch"
         data-project={base64Encode(props.project.worktree)}
         classList={{
-          "flex items-center justify-center size-10 p-1 rounded-lg overflow-hidden transition-colors cursor-default": true,
-          "bg-transparent border-2 border-icon-strong-base hover:bg-surface-base-hover": selected(),
-          "bg-transparent border border-transparent hover:bg-surface-base-hover hover:border-border-weak-base":
-            !selected() && !active(),
-          "bg-surface-base-hover border border-border-weak-base": !selected() && active(),
+          "flex items-center justify-center size-10 p-1 rounded-md overflow-hidden border transition-colors cursor-default": true,
+          "bg-surface-base-active border-border-weak-base": selected(),
+          "bg-transparent border-transparent hover:bg-surface-base-hover": !selected() && !active(),
+          "bg-surface-base-hover border-border-weak-base": !selected() && active(),
         }}
         onMouseEnter={(event: MouseEvent) => {
           if (!overlay()) return
@@ -194,6 +194,21 @@ export const SortableProject = (props: {
           <div class="-m-3 p-2 flex flex-col w-72">
             <div class="px-4 pt-2 pb-1 flex items-center gap-2">
               <div class="text-14-medium text-text-strong truncate grow">{displayName(props.project)}</div>
+              <Tooltip value={language.t("command.session.new")} placement="top" gutter={6}>
+                <IconButton
+                  icon="plus-small"
+                  variant="ghost"
+                  class="shrink-0"
+                  data-action="project-new-session-hover"
+                  data-project={base64Encode(props.project.worktree)}
+                  aria-label={language.t("command.session.new")}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    setOpen(false)
+                    props.ctx.createSession(props.project.worktree)
+                  }}
+                />
+              </Tooltip>
               <Tooltip value={language.t("common.close")} placement="top" gutter={6}>
                 <IconButton
                   icon="circle-x"
