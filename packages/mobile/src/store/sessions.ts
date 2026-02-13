@@ -11,7 +11,6 @@ type SessionState = {
   fetchStatuses: () => Promise<void>
   create: () => Promise<Session>
   archive: (id: string) => Promise<void>
-  reset: () => void
   _upsert: (session: Session) => void
   _remove: (id: string) => void
   _setStatus: (id: string, status: SessionStatus) => void
@@ -62,14 +61,6 @@ export const useSessions = createStore<SessionState>((set, get) => ({
       set({ current: null })
     }
   },
-
-  reset: () =>
-    set({
-      sessions: [],
-      statuses: {},
-      current: null,
-      loading: false,
-    }),
 
   _upsert: (session) => {
     set((state) => {
