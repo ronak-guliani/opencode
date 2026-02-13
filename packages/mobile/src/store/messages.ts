@@ -12,6 +12,7 @@ type MessageState = {
   send: (sessionID: string, content: string) => Promise<void>
   sendNew: (content: string) => Promise<string>
   abort: (sessionID: string) => Promise<void>
+  reset: () => void
   _upsertMessage: (sessionID: string, message: Message) => void
   _removeMessage: (sessionID: string, messageID: string) => void
   _upsertPart: (messageID: string, part: Part) => void
@@ -103,6 +104,13 @@ export const useMessages = createStore<MessageState>((set, get) => ({
       // ignore
     }
   },
+
+  reset: () =>
+    set({
+      messages: {},
+      parts: {},
+      sending: {},
+    }),
 
   _upsertMessage: (sessionID, message) => {
     set((state) => {

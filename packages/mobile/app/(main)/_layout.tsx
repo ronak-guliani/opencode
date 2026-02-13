@@ -2,7 +2,6 @@ import { useCallback, useState } from "react"
 import { View, StyleSheet, useWindowDimensions } from "react-native"
 import { Stack, useRouter } from "expo-router"
 import { Drawer } from "react-native-drawer-layout"
-import { isLiquidGlassSupported } from "@callstack/liquid-glass"
 import { Sidebar } from "../../src/components/sidebar"
 import { ConnectionBanner } from "../../src/components/connection-banner"
 import { useTheme } from "../../src/theme"
@@ -32,6 +31,11 @@ export default function MainLayout() {
     router.push("/(main)/settings")
   }, [isTablet])
 
+  const onProjectChange = useCallback(() => {
+    router.replace("/(main)/session")
+    if (!isTablet) setOpen(false)
+  }, [isTablet])
+
   return (
     <Drawer
       open={open}
@@ -40,9 +44,11 @@ export default function MainLayout() {
       drawerType={isTablet ? "permanent" : "slide"}
       drawerStyle={{
         width: 300,
-        backgroundColor: isLiquidGlassSupported ? "transparent" : theme.colors.background,
+        backgroundColor: theme.colors.background,
       }}
-      renderDrawerContent={() => <Sidebar onSelect={onSelectSession} onNew={onNewSession} onSettings={onSettings} />}
+      renderDrawerContent={() => (
+        <Sidebar onSelect={onSelectSession} onNew={onNewSession} onSettings={onSettings} onProjectChange={onProjectChange} />
+      )}
     >
       <View style={[styles.content, { backgroundColor: theme.colors.background }]}>
         <ConnectionBanner />
