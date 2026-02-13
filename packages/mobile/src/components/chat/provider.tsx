@@ -1,12 +1,13 @@
 import { createContext, useContext, useRef, useState, useCallback, type ReactNode } from "react"
 import { useSharedValue, type SharedValue } from "react-native-reanimated"
-import type { FlatList } from "react-native"
+import type { Message } from "@opencode-ai/sdk/client"
+import type { FlashListRef } from "@shopify/flash-list"
 
 type ChatContextValue = {
   composerHeight: SharedValue<number>
   composerH: number
   setComposerH: (h: number) => void
-  listRef: React.RefObject<FlatList | null>
+  listRef: React.RefObject<FlashListRef<Message> | null>
   isAtEnd: SharedValue<boolean>
   messageCount: SharedValue<number>
 }
@@ -18,7 +19,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [composerH, setComposerHState] = useState(0)
   const isAtEnd = useSharedValue(true)
   const messageCount = useSharedValue(0)
-  const listRef = useRef<FlatList>(null)
+  const listRef = useRef<FlashListRef<Message>>(null)
 
   const setComposerH = useCallback((h: number) => {
     composerHeight.value = h

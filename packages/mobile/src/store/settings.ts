@@ -22,6 +22,9 @@ type SettingsState = {
 
 const APPEARANCE_KEY = "appearance"
 const MODEL_KEY = "selected_model"
+const DEBUG_PROVIDER_FETCH =
+  __DEV__ &&
+  (globalThis as { __OPENCODE_MOBILE_PROVIDER_DEBUG__?: boolean }).__OPENCODE_MOBILE_PROVIDER_DEBUG__ === true
 
 export function modelName(state: SettingsState): string {
   if (!state.model || !state.providerData) return "Default"
@@ -53,7 +56,7 @@ export const useSettings = createStore<SettingsState>((set, get) => ({
     try {
       const result = await client().provider.list()
       if (result.data) {
-        if (__DEV__) {
+        if (DEBUG_PROVIDER_FETCH) {
           const d = result.data
           console.log("[providers] connected:", d.connected)
           console.log("[providers] all IDs:", d.all.map((p) => p.id))
@@ -76,11 +79,11 @@ export const useSettings = createStore<SettingsState>((set, get) => ({
           }
         }
         set({ providerData, model: nextModel })
-      } else if (__DEV__) {
+      } else if (DEBUG_PROVIDER_FETCH) {
         console.warn("[providers] no data in response", result)
       }
     } catch (e) {
-      if (__DEV__) console.warn("[providers] fetch failed:", e)
+      if (DEBUG_PROVIDER_FETCH) console.warn("[providers] fetch failed:", e)
     }
   },
 

@@ -1,7 +1,31 @@
 import { create as createStore } from "zustand"
-import type { Session, SessionStatus } from "@opencode-ai/sdk/client"
-import { client } from "../api/client"
+import { createOpencodeClient } from "@opencode-ai/sdk/client"
+import type { Project, Session, SessionStatus } from "@opencode-ai/sdk/client"
+import { client, url, headers } from "../api/client"
+
+function projectClient(worktree: string) {
+  const base = headers()
+  const nextHeaders: Record<string, string> = {
+    ...base,
+    "x-opencode-directory": worktree,
+  }
+  return createOpencodeClient({
+    baseUrl: url(),
+    headers: nextHeaders,
+  })
+}
+
+async function listSessionsByProject(project: Project): Promise<Session[]> {
+  const result = await projectClient(project.worktree).session.list()
+  return result.data ?? []
+}
+
+async function listStatusesByProject(project: Project): Promise<Record<string, SessionStatus> | undefined> {
+  const result = await projectClient(project.worktree).session.status()
+  return result.data as Record<string, SessionStatus> | undefined
+}
 type SessionState = {
+  projects: Project[]
   sessions: Session[]
   statuses: Record<string, SessionStatus>
   current: string | null
@@ -18,6 +42,7 @@ type SessionState = {
 }
 
 export const useSessions = createStore<SessionState>((set, get) => ({
+  projects: [],
   sessions: [],
   statuses: {},
   current: null,
@@ -28,10 +53,19 @@ export const useSessions = createStore<SessionState>((set, get) => ({
   fetch: async () => {
     set({ loading: true })
     try {
-      const result = await client().session.list()
-      if (!result.data) return
-      const sorted = [...result.data].sort((a, b) => b.time.updated - a.time.updated)
-      set({ sessions: sorted, loading: false })
+      const projectsResult = await client().project.list()
+      const projects = projectsResult.data ?? []
+      const groups = await Promise.all(
+        projects.map(async (project) => {
+          try {
+            return await listSessionsByProject(project)
+          } catch {
+            return []
+          }
+        }),
+      )
+      const sorted = groups.flat().sort((a, b) => b.time.updated - a.time.updated)
+      set({ projects, sessions: sorted, loading: false })
     } catch {
       set({ loading: false })
     }
@@ -39,9 +73,21 @@ export const useSessions = createStore<SessionState>((set, get) => ({
 
   fetchStatuses: async () => {
     try {
-      const result = await client().session.status()
-      if (!result.data) return
-      set({ statuses: result.data as Record<string, SessionStatus> })
+      const projects = get().projects.length ? get().projects : ((await client().project.list()).data ?? [])
+      const statuses = await Promise.all(
+        projects.map(async (project) => {
+          try {
+            return await listStatusesByProject(project)
+          } catch {
+            return undefined
+          }
+        }),
+      )
+      const merged = statuses.reduce<Record<string, SessionStatus>>((acc, item) => {
+        if (!item) return acc
+        return { ...acc, ...item }
+      }, {})
+      set({ statuses: merged })
     } catch {
       // ignore
     }

@@ -1,7 +1,7 @@
 import * as SecureStore from "expo-secure-store"
 import { create as createStore } from "zustand"
 import * as api from "../api/client"
-import { unsubscribe } from "../api/events"
+import { subscribe, unsubscribe } from "../api/events"
 
 type Status = "disconnected" | "connecting" | "connected" | "error"
 type StreamStatus = "connected" | "reconnecting" | "disconnected"
@@ -15,6 +15,7 @@ type ConnectionState = {
   auth: { username: string; password: string } | null
   stream: StreamStatus
   setStream: (s: StreamStatus) => void
+  switchDirectory: (directory: string) => Promise<void>
   connect: (url: string, auth?: { username: string; password: string }) => Promise<void>
   disconnect: () => void
   restore: () => Promise<boolean>
@@ -30,6 +31,17 @@ export const useConnection = createStore<ConnectionState>((set, get) => ({
   stream: "disconnected",
 
   setStream: (stream) => set({ stream }),
+
+  switchDirectory: async (directory) => {
+    const state = get()
+    if (!state.url || state.status !== "connected") return
+    if (state.directory === directory) return
+
+    unsubscribe()
+    api.create(state.url, directory, state.auth ?? undefined)
+    set({ directory, stream: "disconnected" })
+    void subscribe()
+  },
 
   connect: async (url, auth) => {
     set({ status: "connecting", error: null, stream: "disconnected" })

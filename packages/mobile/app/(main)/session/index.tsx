@@ -7,7 +7,7 @@ import * as Haptics from "expo-haptics"
 import { useRouter } from "expo-router"
 import { useMessages } from "../../../src/store/messages"
 import { useSessions } from "../../../src/store/sessions"
-import { ModelPicker, ModelPickerTrigger } from "../../../src/components/model-picker"
+import { ModelPicker, ModelPickerIconButton } from "../../../src/components/model-picker"
 import { useTheme } from "../../../src/theme"
 
 export default function SessionIndex() {
@@ -68,6 +68,7 @@ export default function SessionIndex() {
       </Text>
     </Pressable>
   )
+  const modelButton = <ModelPickerIconButton onPress={() => setPickerVisible(true)} />
 
   const GlassContainer = LiquidGlassContainerView as React.ComponentType<{
     spacing?: number
@@ -98,42 +99,43 @@ export default function SessionIndex() {
         >
           {isLiquidGlassSupported ? (
             <GlassContainer spacing={8} style={styles.glassRow}>
-              <Glass interactive style={[styles.glassInput, { borderRadius: theme.radii.lg }]}>
-                <View style={styles.inputContent}>
-                  <ModelPickerTrigger onPress={() => setPickerVisible(true)} />
-                  <TextInput
-                    ref={inputRef}
-                    style={[styles.input, { color: theme.colors.text }]}
-                    value={text}
-                    onChangeText={setText}
-                    placeholder="Send a message..."
-                    placeholderTextColor={theme.colors.textTertiary}
-                    multiline
-                    maxLength={100000}
-                    editable={!sending}
-                    returnKeyType="default"
-                    blurOnSubmit={false}
-                    autoFocus
-                  />
-                </View>
+              <Glass interactive style={styles.glassCircle}>
+                {modelButton}
               </Glass>
-              <Glass interactive style={styles.glassSend}>
+              <Glass interactive style={[styles.glassInput, { borderRadius: 24 }]}>
+                <TextInput
+                  ref={inputRef}
+                  style={[styles.input, { color: theme.colors.text }]}
+                  value={text}
+                  onChangeText={setText}
+                  placeholder="Send a message..."
+                  placeholderTextColor={theme.colors.textTertiary}
+                  multiline
+                  maxLength={100000}
+                  editable={!sending}
+                  returnKeyType="default"
+                  blurOnSubmit={false}
+                  autoFocus
+                />
+              </Glass>
+              <Glass interactive style={styles.glassCircle}>
                 {sendButton}
               </Glass>
             </GlassContainer>
           ) : (
-            <View
-              style={[
-                styles.inputRow,
-                {
-                  backgroundColor: theme.colors.background,
-                  borderColor: theme.colors.border,
-                  borderRadius: theme.radii.lg,
-                },
-              ]}
-            >
-              <View style={styles.inputContent}>
-                <ModelPickerTrigger onPress={() => setPickerVisible(true)} />
+            <View style={styles.fallbackRow}>
+              <View style={[styles.fallbackCircle, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+                {modelButton}
+              </View>
+              <View
+                style={[
+                  styles.inputRow,
+                  {
+                    backgroundColor: theme.colors.background,
+                    borderColor: theme.colors.border,
+                  },
+                ]}
+              >
                 <TextInput
                   ref={inputRef}
                   style={[styles.input, { color: theme.colors.text }]}
@@ -149,7 +151,9 @@ export default function SessionIndex() {
                   autoFocus
                 />
               </View>
-              {sendButton}
+              <View style={[styles.fallbackCircle, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+                {sendButton}
+              </View>
             </View>
           )}
         </View>
@@ -182,39 +186,54 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     gap: 8,
   },
+  glassCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    overflow: "hidden",
+    justifyContent: "center",
+    alignItems: "center",
+  },
   glassInput: {
     flex: 1,
-    paddingLeft: 14,
-    paddingRight: 6,
+    minHeight: 48,
+    justifyContent: "center",
+    paddingHorizontal: 16,
     paddingVertical: 6,
   },
-  glassSend: {
-    borderRadius: 16,
-    overflow: "hidden",
-  },
-  inputRow: {
+  fallbackRow: {
     flexDirection: "row",
     alignItems: "flex-end",
-    borderWidth: 1,
-    paddingLeft: 14,
-    paddingRight: 6,
-    paddingVertical: 6,
     gap: 8,
   },
-  inputContent: {
+  fallbackCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  inputRow: {
     flex: 1,
+    minHeight: 48,
+    borderWidth: 1,
+    borderRadius: 24,
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 6,
   },
   input: {
     fontSize: 15,
     lineHeight: 22,
-    minHeight: 36,
-    maxHeight: 120,
-    paddingVertical: Platform.OS === "ios" ? 6 : 4,
+    minHeight: 30,
+    maxHeight: 110,
+    paddingVertical: Platform.OS === "ios" ? 4 : 2,
   },
   sendButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     justifyContent: "center",
     alignItems: "center",
   },
