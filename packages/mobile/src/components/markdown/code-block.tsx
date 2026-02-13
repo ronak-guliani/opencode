@@ -231,7 +231,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   code: {
-    fontFamily: "Menlo",
+    fontFamily: "Geist Mono",
     fontSize: 13,
     lineHeight: 19,
   },

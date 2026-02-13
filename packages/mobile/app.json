@@ -25,6 +25,15 @@
       "edgeToEdgeEnabled": true,
       "package": "ai.opencode.mobile"
     },
-    "plugins": ["expo-router", "expo-secure-store"]
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-font",
+        {
+          "fonts": ["./assets/fonts/geist.ttf", "./assets/fonts/geist-mono.ttf"]
+        }
+      ]
+    ]
   }
 }

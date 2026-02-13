@@ -477,7 +477,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   toolCode: {
-    fontFamily: "Menlo",
+    fontFamily: "Geist Mono",
     fontSize: 12,
     lineHeight: 17,
     padding: 8,
