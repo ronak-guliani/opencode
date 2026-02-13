@@ -187,7 +187,7 @@ export const SortableWorkspace = (props: {
       <Collapsible variant="ghost" open={open()} class="shrink-0" onOpenChange={openWrapper}>
         <div class="px-2 py-1">
           <div
-            class="group/workspace relative"
+            class="group/workspace relative rounded-md border border-border-weak-base bg-surface-base"
             data-component="workspace-item"
             data-workspace={base64Encode(props.directory)}
           >
@@ -196,7 +196,7 @@ export const SortableWorkspace = (props: {
                 when={workspaceEditActive()}
                 fallback={
                   <Collapsible.Trigger
-                    class={`flex items-center justify-between w-full pl-2 py-1.5 rounded-md hover:bg-surface-raised-base-hover transition-[padding] duration-200 ${
+                    class={`flex items-center justify-between w-full pl-2 py-1.5 rounded-md hover:bg-surface-base-hover transition-[padding] duration-200 ${
                       menu.open ? "pr-16" : "pr-2"
                     } group-hover/workspace:pr-16 group-focus-within/workspace:pr-16`}
                     data-action="workspace-toggle"
