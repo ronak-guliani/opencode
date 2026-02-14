@@ -695,7 +695,7 @@ function useSessionStatus(id: string) {
 3. Implement connection store + connect screen
 4. Wire up SDK client + health check
 5. Implement two-phase bootstrap
-6. Implement SSE event subscription with coalescing
+6. Implement SSE event subscription with coalescing 
 7. Implement sessions store + sidebar with session list (LegendList)
 8. Implement session chat view with `ChatProvider` + composable hooks
 9. Basic message rendering (user bubbles, assistant text)
@@ -750,7 +750,7 @@ function useSessionStatus(id: string) {
 2. Session diffs viewer
 3. Tablet layout (persistent sidebar, split view)
 4. Offline indicator
-5. Push notifications (optional)
+5. Push notifications
 
 ---
 

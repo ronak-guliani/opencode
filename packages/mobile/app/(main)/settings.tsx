@@ -36,7 +36,7 @@ export default function SettingsScreen() {
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
         <Text style={[styles.title, { color: theme.colors.text }]}>Settings</Text>
-        <Pressable onPress={() => router.back()} hitSlop={16}>
+        <Pressable onPress={() => router.back()} hitSlop={20}>
           <Text style={[styles.done, { color: theme.colors.accent }]}>Done</Text>
         </Pressable>
       </View>

@@ -12,9 +12,10 @@ type Props = {
   sessionId: string
   messages: Message[]
   enableMarkdown?: boolean
+  topPadding?: number
 }
 
-export function MessagesList({ sessionId, messages, enableMarkdown = true }: Props) {
+export function MessagesList({ sessionId, messages, enableMarkdown = true, topPadding }: Props) {
   const insets = useSafeAreaInsets()
   const { listRef, isAtEnd, messageCount, composerH } = useChat()
   const loadMore = useMessages((s) => s.loadMore)
@@ -35,12 +36,12 @@ export function MessagesList({ sessionId, messages, enableMarkdown = true }: Pro
   const count = messages.length
   const loadingSession = loadingMap[sessionId] ?? false
   const exhaustedSession = exhaustedMap[sessionId] ?? false
-  const topPadding = insets.top + 16
+  const padTop = topPadding ?? insets.top + 16
 
   // Blank size: when content is shorter than the visible area, pad the bottom
   // so messages appear at the top of the screen instead of being pushed down
   const composerPad = composerH || 120
-  const blankSize = Math.max(0, layoutHeight - contentHeight - topPadding) + composerPad
+  const blankSize = Math.max(0, layoutHeight - contentHeight - padTop) + composerPad
 
   const scheduleScrollToEnd = useCallback(
     (animated: boolean) => {
@@ -199,8 +200,8 @@ export function MessagesList({ sessionId, messages, enableMarkdown = true }: Pro
   }, [])
 
   const contentContainerStyle = useMemo(
-    () => [styles.content, { paddingTop: topPadding, paddingBottom: blankSize }],
-    [topPadding, blankSize],
+    () => [styles.content, { paddingTop: padTop, paddingBottom: blankSize }],
+    [padTop, blankSize],
   )
 
   // Auto-scroll only when new messages arrive and user is already at end.

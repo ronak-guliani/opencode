@@ -22,7 +22,7 @@ export const CodeBlock = memo(function CodeBlock({ code, language }: Props) {
     <View style={[styles.container, { backgroundColor: theme.colors.codeBackground, borderRadius: theme.radii.md }]}>
       <View style={[styles.header, { borderBottomColor: theme.colors.codeBorder }]}>
         <Text style={[styles.language, { color: theme.colors.textTertiary }]}>{normalized || "text"}</Text>
-        <Pressable onPress={copy} hitSlop={8}>
+        <Pressable onPress={copy} hitSlop={12}>
           <Text style={[styles.copy, { color: theme.colors.textTertiary }]}>Copy</Text>
         </Pressable>
       </View>

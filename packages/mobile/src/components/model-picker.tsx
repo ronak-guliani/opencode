@@ -280,7 +280,7 @@ export function ModelPickerIconButton({ onPress }: { onPress: () => void }) {
     <Pressable
       onPress={onPress}
       style={styles.iconButton}
-      hitSlop={6}
+      hitSlop={12}
       accessibilityRole="button"
       accessibilityLabel="Pick model"
     >

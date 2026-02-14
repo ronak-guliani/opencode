@@ -11,8 +11,13 @@ import { useTheme } from "../../src/theme"
 import { useSessions } from "../../src/store/sessions"
 import { useMessages } from "../../src/store/messages"
 import { useConnection } from "../../src/store/connection"
+import { useSidebar } from "../../src/store/sidebar"
 
 const AnimatedView = Animated.View as React.ComponentType<ViewProps & { style?: unknown; children?: React.ReactNode }>
+const SWIPE_SURFACE_BLUR_INTENSITY = 80
+const SWIPE_SURFACE_OVERLAY_OPACITY = 0.14
+const DRAWER_SWIPE_MIN_DISTANCE = 12
+const DRAWER_SWIPE_MIN_VELOCITY = 220
 
 export default function MainLayout() {
   const router = useRouter()
@@ -24,6 +29,7 @@ export default function MainLayout() {
   const prefetchMessages = useMessages((s) => s.prefetch)
   const directory = useConnection((s) => s.directory)
   const switchDirectory = useConnection((s) => s.switchDirectory)
+  const openSignal = useSidebar((s) => s.openSignal)
 
   useEffect(() => {
     setOpen(isTablet)
@@ -32,6 +38,11 @@ export default function MainLayout() {
   const setOpenIfChanged = useCallback((next: boolean) => {
     setOpen((current) => (current === next ? current : next))
   }, [])
+
+  useEffect(() => {
+    if (!openSignal || isTablet) return
+    setOpenIfChanged(true)
+  }, [openSignal, isTablet, setOpenIfChanged])
 
   const onSelectSession = useCallback(
     async (session: Session) => {
@@ -55,11 +66,14 @@ export default function MainLayout() {
     [isTablet, router, select, loadMessages, prefetchMessages, setOpenIfChanged, directory, switchDirectory],
   )
 
-  const onNewSession = useCallback(() => {
+  const onNewSession = useCallback(async (worktree?: string) => {
+    if (worktree && worktree !== directory) {
+      await switchDirectory(worktree)
+    }
     select(null)
     if (!isTablet) setOpenIfChanged(false)
     router.replace("/(main)/session")
-  }, [isTablet, router, select, setOpenIfChanged])
+  }, [directory, isTablet, router, select, setOpenIfChanged, switchDirectory])
 
   const onSettings = useCallback(() => {
     if (!isTablet) setOpenIfChanged(false)
@@ -91,18 +105,18 @@ export default function MainLayout() {
       drawerType={isTablet ? "permanent" : "slide"}
       swipeEnabled={!isTablet}
       swipeEdgeWidth={isTablet ? 0 : width}
-      swipeMinDistance={28}
-      swipeMinVelocity={450}
+      swipeMinDistance={DRAWER_SWIPE_MIN_DISTANCE}
+      swipeMinVelocity={DRAWER_SWIPE_MIN_VELOCITY}
       overlayStyle={styles.drawerOverlay}
       drawerStyle={drawerStyle}
       renderDrawerContent={renderDrawerContent}
     >
-      <SlidingContent isTablet={isTablet} drawerWidth={isTablet ? 320 : width} />
+      <SlidingContent isTablet={isTablet} />
     </Drawer>
   )
 }
 
-function SlidingContent({ isTablet, drawerWidth }: { isTablet: boolean; drawerWidth: number }) {
+function SlidingContent({ isTablet }: { isTablet: boolean }) {
   const theme = useTheme()
   const progress = useDrawerProgress()
   const tint = theme.colors.background === "#09090b" ? "dark" : "light"
@@ -112,21 +126,6 @@ function SlidingContent({ isTablet, drawerWidth }: { isTablet: boolean; drawerWi
       opacity: isTablet ? 0 : interpolate(progress.value, [0, 1], [0, 1]),
     }),
     [isTablet],
-  )
-
-  const shadeOverlayStyle = useAnimatedStyle(
-    () => ({
-      opacity: isTablet ? 0 : interpolate(progress.value, [0, 1], [0, 0.18]),
-    }),
-    [isTablet],
-  )
-
-  const drawerBlurStyle = useAnimatedStyle(
-    () => ({
-      opacity: isTablet ? 0 : interpolate(progress.value, [0, 1], [0, 1]),
-      transform: [{ translateX: isTablet ? 0 : drawerWidth * (progress.value - 1) }],
-    }),
-    [isTablet, drawerWidth],
   )
 
   return (
@@ -139,27 +138,25 @@ function SlidingContent({ isTablet, drawerWidth }: { isTablet: boolean; drawerWi
           options={{
             presentation: "formSheet",
             headerShown: false,
+            gestureDirection: "vertical",
             sheetGrabberVisible: true,
             sheetCornerRadius: 20,
+            sheetExpandsWhenScrolledToEdge: false,
             gestureEnabled: true,
           }}
         />
       </Stack>
       {!isTablet && Platform.OS === "ios" ? (
         <>
-          <AnimatedView
-            pointerEvents="none"
-            style={[styles.drawerBlurOverlay, { width: drawerWidth }, drawerBlurStyle]}
-          >
-            <BlurView intensity={94} tint={tint} style={StyleSheet.absoluteFill} />
-          </AnimatedView>
           <AnimatedView pointerEvents="none" style={[styles.mainBlurOverlay, blurOverlayStyle]}>
-            <BlurView intensity={74} tint={tint} style={StyleSheet.absoluteFill} />
+            <BlurView intensity={SWIPE_SURFACE_BLUR_INTENSITY} tint={tint} style={StyleSheet.absoluteFill} />
+            <View
+              style={[
+                styles.mainBlurTint,
+                { backgroundColor: theme.colors.background, opacity: SWIPE_SURFACE_OVERLAY_OPACITY },
+              ]}
+            />
           </AnimatedView>
-          <AnimatedView
-            pointerEvents="none"
-            style={[styles.mainShadeOverlay, { backgroundColor: tint === "dark" ? "#000" : "#fff" }, shadeOverlayStyle]}
-          />
         </>
       ) : null}
     </View>
@@ -173,14 +170,7 @@ const styles = StyleSheet.create({
   mainBlurOverlay: {
     ...StyleSheet.absoluteFillObject,
   },
-  drawerBlurOverlay: {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    bottom: 0,
-    overflow: "hidden",
-  },
-  mainShadeOverlay: {
+  mainBlurTint: {
     ...StyleSheet.absoluteFillObject,
   },
   drawerOverlay: {

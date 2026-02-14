@@ -7,6 +7,7 @@ import { StyleSheet, Text, TextInput } from "react-native"
 import { useConnection } from "../src/store/connection"
 import { useSettings } from "../src/store/settings"
 import { bootstrap } from "../src/api/bootstrap"
+import { useTheme } from "../src/theme"
 
 Text.defaultProps = Text.defaultProps ?? {}
 TextInput.defaultProps = TextInput.defaultProps ?? {}
@@ -18,6 +19,8 @@ export default function RootLayout() {
   const [ready, setReady] = useState(false)
   const restore = useConnection((s) => s.restore)
   const restoreAppearance = useSettings((s) => s.restoreAppearance)
+  const theme = useTheme()
+  const statusBarStyle = theme.colors.background === "#09090b" ? "light" : "dark"
 
   useEffect(() => {
     let mounted = true
@@ -46,7 +49,7 @@ export default function RootLayout() {
           <Stack.Screen name="connect" options={{ presentation: "card" }} />
           <Stack.Screen name="(main)" />
         </Stack>
-        <StatusBar style="auto" />
+        <StatusBar style={statusBarStyle} />
       </KeyboardProvider>
     </GestureHandlerRootView>
   )

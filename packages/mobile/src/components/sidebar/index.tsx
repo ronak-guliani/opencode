@@ -9,12 +9,9 @@ import {
   RefreshControl,
   Alert,
   Platform,
-  type ViewProps,
 } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { BlurView } from "expo-blur"
-import { useDrawerProgress } from "react-native-drawer-layout"
-import Animated, { interpolate, useAnimatedStyle } from "react-native-reanimated"
 import * as ZeegoContextMenu from "zeego/context-menu"
 import * as Haptics from "expo-haptics"
 import * as Clipboard from "expo-clipboard"
@@ -31,7 +28,11 @@ const MenuRoot = ZeegoContextMenu.Root as React.ComponentType<{
   onOpenChange?: (open: boolean) => void
   children?: React.ReactNode
 }>
-const MenuTrigger = ZeegoContextMenu.Trigger as React.ComponentType<{ children?: React.ReactNode }>
+const MenuTrigger = ZeegoContextMenu.Trigger as React.ComponentType<{
+  asChild?: boolean
+  action?: "press" | "longPress"
+  children?: React.ReactElement
+}>
 const MenuContent = ZeegoContextMenu.Content as React.ComponentType<{ children?: React.ReactNode }>
 const MenuItem = ZeegoContextMenu.Item as React.ComponentType<{
   key: string
@@ -44,11 +45,12 @@ const MenuItemIcon = ZeegoContextMenu.ItemIcon as React.ComponentType<{
   ios?: { name: string }
   children?: React.ReactNode
 }>
-const AnimatedView = Animated.View as React.ComponentType<ViewProps & { style?: unknown; children?: React.ReactNode }>
+const SWIPE_SURFACE_BLUR_INTENSITY = 80
+const SWIPE_SURFACE_OVERLAY_OPACITY = 0.14
 
 type Props = {
   onSelect: (session: Session) => void | Promise<void>
-  onNew: () => void
+  onNew: (worktree?: string) => void | Promise<void>
   onSettings: () => void
 }
 
@@ -56,16 +58,9 @@ type SectionItem =
   | { type: "project"; project: Project; count: number; collapsed: boolean; active: boolean }
   | { type: "session"; session: Session }
 
-function shortenPath(p: string) {
-  const parts = p.split("/")
-  if (parts.length <= 3) return p
-  return "~/" + parts.slice(-2).join("/")
-}
-
 export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Props) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
-  const progress = useDrawerProgress()
   const projects = useSessions((s) => s.projects)
   const sessions = useSessions((s) => s.sessions)
   const loading = useSessions((s) => s.loading)
@@ -80,7 +75,10 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
   const filteredSessions = useMemo(() => {
     if (!query.trim()) return sessions
     const q = query.toLowerCase()
-    return sessions.filter((s) => (s.title || "").toLowerCase().includes(q))
+    return sessions.filter((s) => {
+      const title = (s.title || "").toLowerCase()
+      return title.includes(q) || s.directory.toLowerCase().includes(q)
+    })
   }, [sessions, query])
 
   const projectsWithFallback = useMemo(() => {
@@ -110,9 +108,10 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
     }
 
     const orderedProjects = [...projectsWithFallback].sort((a, b) => {
-      if (a.worktree === directory) return -1
-      if (b.worktree === directory) return 1
-      return a.worktree.localeCompare(b.worktree)
+      const aTime = grouped[a.worktree]?.[0]?.time.updated ?? 0
+      const bTime = grouped[b.worktree]?.[0]?.time.updated ?? 0
+      if (aTime === bTime) return a.worktree.localeCompare(b.worktree)
+      return bTime - aTime
     })
 
     return orderedProjects.flatMap((project) => {
@@ -176,25 +175,53 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
   }, [])
 
   const toggleProject = useCallback((worktree: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     setCollapsed((state) => ({ ...state, [worktree]: !(state[worktree] ?? false) }))
   }, [])
+
+  const allCollapsed = useMemo(() => {
+    if (projectsWithFallback.length === 0) return false
+    return projectsWithFallback.every((project) => collapsed[project.worktree] ?? false)
+  }, [projectsWithFallback, collapsed])
+
+  const toggleAll = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+    setCollapsed((state) => {
+      const shouldCollapse = !projectsWithFallback.every((project) => state[project.worktree] ?? false)
+      const next = { ...state }
+      for (const project of projectsWithFallback) {
+        next[project.worktree] = shouldCollapse
+      }
+      return next
+    })
+  }, [projectsWithFallback])
+
+  const handleCreateSession = useCallback(
+    (worktree?: string) => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+      void onNew(worktree)
+    },
+    [onNew],
+  )
 
   const renderItem = useCallback(
     ({ item }: { item: SectionItem }) => {
       if (item.type === "project") {
-        return <ProjectRow item={item} onToggle={toggleProject} />
+        return <ProjectRow item={item} onToggle={toggleProject} onNew={handleCreateSession} />
       }
       return (
-        <SessionRow
-          session={item.session}
-          onSelect={onSelect}
-          onArchive={handleArchive}
-          onDelete={handleDelete}
-          onShare={handleShare}
-        />
+        <View style={styles.sessionIndent}>
+          <SessionRow
+            session={item.session}
+            onSelect={onSelect}
+            onArchive={handleArchive}
+            onDelete={handleDelete}
+            onShare={handleShare}
+          />
+        </View>
       )
     },
-    [handleArchive, handleDelete, handleShare, onSelect, toggleProject],
+    [handleArchive, handleDelete, handleShare, onSelect, toggleProject, handleCreateSession],
   )
 
   const keyExtractor = useCallback((item: SectionItem) => {
@@ -202,54 +229,33 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
     return item.session.id
   }, [])
 
-  const projectName = "Projects"
-  const projectPath = directory ? shortenPath(directory) : "No active project"
   const tint = theme.colors.background === "#09090b" ? "dark" : "light"
-  const isIOS = Platform.OS === "ios"
-  const overlayTint = tint === "dark" ? "#09090b" : "#ffffff"
-
-  const overlayStyle = useAnimatedStyle(
-    () => ({
-      opacity: isIOS ? interpolate(progress.value, [0, 1], [0.16, 0.26]) : 1,
-    }),
-    [isIOS],
-  )
-
-  const gestureBlurStyle = useAnimatedStyle(
-    () => {
-      const slide = progress.value * (1 - progress.value) * 4
-      return {
-        opacity: isIOS ? slide * 0.42 : 0,
-      }
-    },
-    [isIOS],
-  )
 
   const content = (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <View style={styles.headerContent}>
-          <Text style={[styles.projectName, { color: theme.colors.text }]}>{projectName}</Text>
-          <Text
-            style={[styles.projectPath, { color: theme.colors.textTertiary }]}
-            numberOfLines={1}
-            ellipsizeMode="middle"
-          >
-            {projectPath}
-          </Text>
+        <Text style={[styles.headerTitle, { color: theme.colors.text }]}>Threads</Text>
+        <View style={styles.headerActions}>
+          <HeaderIconButton icon="plus-square" label="New Session" onPress={() => handleCreateSession()} />
+          <HeaderIconButton
+            icon={allCollapsed ? "expand-all" : "collapse-all"}
+            label={allCollapsed ? "Expand all projects" : "Collapse all projects"}
+            onPress={toggleAll}
+          />
+          <HeaderIconButton icon="settings" label="Settings" onPress={onSettings} />
         </View>
       </View>
 
-      <Pressable
-        style={[styles.newButton, { backgroundColor: theme.colors.accent, borderRadius: theme.radii.md }]}
-        onPress={onNew}
-      >
-        <Text style={[styles.newButtonText, { color: theme.colors.accentText }]}>New Session</Text>
-      </Pressable>
-
       <View
-        style={[styles.searchContainer, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+        style={[
+          styles.searchContainer,
+          {
+            backgroundColor: theme.colors.surface,
+            borderColor: theme.colors.border,
+          },
+        ]}
       >
+        <SearchIcon color={theme.colors.textTertiary} />
         <TextInput
           style={[styles.searchInput, { color: theme.colors.text }]}
           value={query}
@@ -271,7 +277,7 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
           renderItem={renderItem}
           keyExtractor={keyExtractor}
           style={styles.list}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 16 }]}
           refreshControl={
             <RefreshControl refreshing={loading} onRefresh={handleRefresh} tintColor={theme.colors.textTertiary} />
           }
@@ -281,28 +287,27 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
           maxToRenderPerBatch={10}
           updateCellsBatchingPeriod={16}
           removeClippedSubviews={false}
+          ListEmptyComponent={
+            <Text style={[styles.emptyText, { color: theme.colors.textTertiary }]}>No sessions found.</Text>
+          }
         />
       )}
-
-      <Pressable
-        style={[styles.settingsButton, { borderTopColor: theme.colors.border, paddingBottom: insets.bottom + 8 }]}
-        onPress={onSettings}
-      >
-        <Text style={[styles.settingsText, { color: theme.colors.textSecondary }]}>Settings</Text>
-      </Pressable>
     </View>
   )
 
   return (
-    <View style={styles.surface}>
+    <View style={[styles.surface, { backgroundColor: theme.colors.background }]}>
       {Platform.OS === "ios" ? (
         <View style={styles.blur}>
-          <BlurView intensity={88} tint={tint} style={StyleSheet.absoluteFill} />
-          <AnimatedView pointerEvents="none" style={[styles.overlay, { backgroundColor: overlayTint }, overlayStyle]} />
+          <BlurView intensity={SWIPE_SURFACE_BLUR_INTENSITY} tint={tint} style={StyleSheet.absoluteFill} />
+          <View
+            pointerEvents="none"
+            style={[
+              styles.overlay,
+              { backgroundColor: theme.colors.background, opacity: SWIPE_SURFACE_OVERLAY_OPACITY },
+            ]}
+          />
           {content}
-          <AnimatedView pointerEvents="none" style={[styles.slideBlur, gestureBlurStyle]}>
-            <BlurView intensity={56} tint={tint} style={StyleSheet.absoluteFill} />
-          </AnimatedView>
         </View>
       ) : (
         <View style={[styles.fallbackSurface, { backgroundColor: theme.colors.background }]}>{content}</View>
@@ -314,13 +319,15 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
 const ProjectRow = memo(function ProjectRow({
   item,
   onToggle,
+  onNew,
 }: {
   item: Extract<SectionItem, { type: "project" }>
   onToggle: (worktree: string) => void
+  onNew: (worktree: string) => void
 }) {
   const theme = useTheme()
-  const name = item.project.worktree.split("/").pop() || item.project.worktree
-  const icon = item.collapsed ? ">" : "v"
+  const parts = item.project.worktree.split(/[\\/]/).filter(Boolean)
+  const name = parts[parts.length - 1] || item.project.worktree
 
   return (
     <Pressable
@@ -328,20 +335,36 @@ const ProjectRow = memo(function ProjectRow({
         styles.projectRow,
         {
           borderColor: theme.colors.border,
-          backgroundColor: item.active ? theme.colors.surfaceRaised : "transparent",
+          backgroundColor: item.active ? theme.colors.surface : "transparent",
           borderRadius: theme.radii.md,
         },
       ]}
       onPress={() => onToggle(item.project.worktree)}
     >
-      <Text style={[styles.projectChevron, { color: theme.colors.textSecondary }]}>{icon}</Text>
       <View style={styles.projectMain}>
-        <Text style={[styles.projectTitle, { color: theme.colors.text }]} numberOfLines={1}>
-          {name}
+        <View style={styles.projectTitleRow}>
+          <FolderIcon color={theme.colors.textSecondary} />
+          <Text style={[styles.projectTitle, { color: theme.colors.text }]} numberOfLines={1}>
+            {name}
+          </Text>
+        </View>
+        <Text style={[styles.projectPath, { color: theme.colors.textTertiary }]} numberOfLines={1} ellipsizeMode="middle">
+          {item.project.worktree}
         </Text>
-        <Text style={[styles.projectMeta, { color: theme.colors.textTertiary }]} numberOfLines={1}>
-          {`${shortenPath(item.project.worktree)} | ${item.count}`}
-        </Text>
+      </View>
+      <View style={styles.projectActions}>
+        <Pressable
+          style={[styles.projectActionButton, { backgroundColor: theme.colors.surfaceRaised }]}
+          onPress={(event) => {
+            event.stopPropagation()
+            onNew(item.project.worktree)
+          }}
+          hitSlop={8}
+        >
+          <PlusIcon color={theme.colors.textSecondary} />
+        </Pressable>
+        <Text style={[styles.projectCount, { color: theme.colors.textTertiary }]}>{item.count}</Text>
+        <Text style={[styles.chevronGlyph, { color: theme.colors.textSecondary }]}>{item.collapsed ? "›" : "⌄"}</Text>
       </View>
     </Pressable>
   )
@@ -361,7 +384,6 @@ const SessionRow = memo(function SessionRow({
   onShare: (id: string) => void
 }) {
   const theme = useTheme()
-  const status = useSessions((s) => s.statuses[session.id])
   const selected = useSessions((s) => s.current === session.id)
 
   const handleMenuOpen = useCallback(() => {
@@ -379,23 +401,20 @@ const SessionRow = memo(function SessionRow({
       ]}
       onPress={() => void onSelect(session)}
     >
-      <View style={styles.statusSlot}>
-        <StatusDot status={status?.type} />
-      </View>
       <View style={styles.sessionMain}>
-        <Text style={[styles.sessionTitle, { color: theme.colors.text }]} numberOfLines={2}>
+        <Text style={[styles.sessionTitle, { color: theme.colors.text }]} numberOfLines={1}>
           {session.title || "Untitled session"}
         </Text>
-        <Text style={[styles.sessionMeta, { color: theme.colors.textTertiary }]}>
-          {relative(session.time.updated)}
-        </Text>
+        <Text style={[styles.sessionMeta, { color: theme.colors.textTertiary }]}>{relative(session.time.updated)}</Text>
       </View>
     </Pressable>
   )
 
   return (
     <MenuRoot onOpenChange={(open) => open && handleMenuOpen()}>
-      <MenuTrigger>{rowBody}</MenuTrigger>
+      <MenuTrigger asChild action="longPress">
+        {rowBody}
+      </MenuTrigger>
 
       <MenuContent>
         <MenuItem key="share" onSelect={() => onShare(session.id)}>
@@ -415,12 +434,88 @@ const SessionRow = memo(function SessionRow({
   )
 })
 
-function StatusDot({ status }: { status?: string }) {
+const HeaderIconButton = memo(function HeaderIconButton({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: "plus-square" | "collapse-all" | "expand-all" | "settings"
+  label: string
+  onPress: () => void
+}) {
   const theme = useTheme()
-  const color =
-    status === "busy" ? theme.colors.statusBusy : status === "retry" ? theme.colors.statusError : theme.colors.statusIdle
-  return <View style={[styles.dot, { backgroundColor: color }]} />
-}
+  const color = theme.colors.textSecondary
+  return (
+    <Pressable
+      style={[styles.headerIconButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+    >
+      {icon === "plus-square" ? (
+        <PlusSquareIcon color={color} />
+      ) : icon === "collapse-all" ? (
+        <CollapseAllIcon color={color} mode="collapse" />
+      ) : icon === "expand-all" ? (
+        <CollapseAllIcon color={color} mode="expand" />
+      ) : (
+        <Text style={[styles.settingsGlyph, { color }]}>⚙︎</Text>
+      )}
+    </Pressable>
+  )
+})
+
+const FolderIcon = memo(function FolderIcon({ color }: { color: string }) {
+  return (
+    <View style={styles.folderIcon}>
+      <View style={[styles.folderTab, { borderColor: color }]} />
+      <View style={[styles.folderBody, { borderColor: color }]} />
+    </View>
+  )
+})
+
+const PlusIcon = memo(function PlusIcon({ color }: { color: string }) {
+  return (
+    <View style={styles.plusIcon}>
+      <View style={[styles.plusHorizontal, { backgroundColor: color }]} />
+      <View style={[styles.plusVertical, { backgroundColor: color }]} />
+    </View>
+  )
+})
+
+const PlusSquareIcon = memo(function PlusSquareIcon({ color }: { color: string }) {
+  return (
+    <View style={[styles.plusSquareIcon, { borderColor: color }]}>
+      <View style={[styles.plusSquareHorizontal, { backgroundColor: color }]} />
+      <View style={[styles.plusSquareVertical, { backgroundColor: color }]} />
+    </View>
+  )
+})
+
+const SearchIcon = memo(function SearchIcon({ color }: { color: string }) {
+  return (
+    <View style={styles.searchGlyph}>
+      <View style={[styles.searchGlyphCircle, { borderColor: color }]} />
+      <View style={[styles.searchGlyphHandle, { backgroundColor: color }]} />
+    </View>
+  )
+})
+
+const CollapseAllIcon = memo(function CollapseAllIcon({
+  color,
+  mode,
+}: {
+  color: string
+  mode: "collapse" | "expand"
+}) {
+  return (
+    <View style={styles.collapseAllIcon}>
+      <View style={[styles.collapseLine, { backgroundColor: color }]} />
+      <View style={[styles.collapseLine, { backgroundColor: color }]} />
+      <Text style={[styles.collapseChevron, { color }]}>{mode === "collapse" ? "⌃" : "⌄"}</Text>
+    </View>
+  )
+})
 
 const styles = StyleSheet.create({
   surface: {
@@ -430,9 +525,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   overlay: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  slideBlur: {
     ...StyleSheet.absoluteFillObject,
   },
   fallbackSurface: {
@@ -445,107 +537,240 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 8,
-  },
-  headerContent: {},
-  projectName: {
-    fontSize: 22,
-    fontWeight: "700",
-    letterSpacing: -0.35,
-  },
-  projectPath: {
-    fontSize: 11,
-    marginTop: 3,
-  },
-  newButton: {
-    marginHorizontal: 16,
-    marginBottom: 8,
-    paddingVertical: 10,
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
   },
-  newButtonText: {
-    fontSize: 14,
-    fontWeight: "600",
+  headerTitle: {
+    fontSize: 32,
+    fontWeight: "700",
+    letterSpacing: -0.4,
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  headerIconButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
   },
   searchContainer: {
     marginHorizontal: 16,
-    marginBottom: 8,
-    borderRadius: 8,
+    marginBottom: 10,
+    borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
   },
   searchInput: {
-    fontSize: 13,
-    paddingHorizontal: 12,
+    flex: 1,
+    fontSize: 14,
+    paddingLeft: 8,
+    paddingRight: 12,
     paddingVertical: 8,
   },
   list: {
     flex: 1,
   },
   listContent: {
-    paddingHorizontal: 8,
-    paddingBottom: 8,
+    paddingHorizontal: 10,
+    gap: 2,
   },
   projectRow: {
     flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    alignItems: "flex-start",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    marginTop: 8,
-  },
-  projectChevron: {
-    width: 14,
-    fontSize: 11,
-    fontWeight: "700",
+    marginTop: 6,
+    gap: 8,
   },
   projectMain: {
     flex: 1,
-    gap: 1,
+    gap: 3,
+  },
+  projectTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   projectTitle: {
-    fontSize: 13,
+    flex: 1,
+    fontSize: 16,
     fontWeight: "700",
   },
-  projectMeta: {
+  projectPath: {
     fontSize: 11,
+  },
+  projectActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingTop: 2,
+  },
+  projectActionButton: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  projectCount: {
+    minWidth: 18,
+    textAlign: "right",
+    fontSize: 12,
+    fontWeight: "500",
   },
   sessionRow: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    paddingLeft: 18,
-    paddingRight: 10,
-    paddingVertical: 11,
+    alignItems: "center",
+    paddingLeft: 8,
+    paddingRight: 8,
+    paddingVertical: 9,
     gap: 8,
   },
-  statusSlot: {
-    width: 12,
-    alignItems: "center",
-    paddingTop: 6,
+  sessionIndent: {
+    paddingLeft: 34,
+    paddingRight: 4,
   },
   sessionMain: {
     flex: 1,
-    gap: 2,
-    paddingRight: 8,
-  },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
   },
   sessionTitle: {
-    fontSize: 16,
+    flex: 1,
+    fontSize: 15,
     lineHeight: 20,
-    fontWeight: "600",
+    fontWeight: "500",
   },
   sessionMeta: {
     fontSize: 12,
     lineHeight: 16,
+    flexShrink: 0,
   },
-  settingsButton: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 16,
-    paddingTop: 12,
+  emptyText: {
+    paddingHorizontal: 18,
+    paddingTop: 20,
+    fontSize: 13,
   },
-  settingsText: {
+  chevronGlyph: {
+    width: 10,
+    fontSize: 16,
+    lineHeight: 16,
+    textAlign: "center",
+  },
+  settingsGlyph: {
     fontSize: 14,
+    fontWeight: "600",
+    lineHeight: 16,
+  },
+  folderIcon: {
+    width: 16,
+    height: 12,
+  },
+  folderTab: {
+    position: "absolute",
+    top: 0,
+    left: 1,
+    width: 6,
+    height: 4,
+    borderWidth: 1,
+    borderBottomWidth: 0,
+    borderTopLeftRadius: 2,
+    borderTopRightRadius: 2,
+  },
+  folderBody: {
+    position: "absolute",
+    top: 3,
+    left: 0,
+    width: 16,
+    height: 9,
+    borderWidth: 1,
+    borderRadius: 2,
+  },
+  plusIcon: {
+    width: 14,
+    height: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  plusHorizontal: {
+    position: "absolute",
+    width: 8,
+    height: 1.5,
+    borderRadius: 1,
+  },
+  plusVertical: {
+    position: "absolute",
+    width: 1.5,
+    height: 8,
+    borderRadius: 1,
+  },
+  plusSquareIcon: {
+    width: 16,
+    height: 16,
+    borderWidth: 1.4,
+    borderRadius: 3,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  plusSquareHorizontal: {
+    position: "absolute",
+    width: 8,
+    height: 1.5,
+    borderRadius: 1,
+  },
+  plusSquareVertical: {
+    position: "absolute",
+    width: 1.5,
+    height: 8,
+    borderRadius: 1,
+  },
+  searchGlyph: {
+    width: 14,
+    height: 14,
+    marginLeft: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  searchGlyphCircle: {
+    width: 9,
+    height: 9,
+    borderWidth: 1.5,
+    borderRadius: 5,
+  },
+  searchGlyphHandle: {
+    position: "absolute",
+    width: 5,
+    height: 1.5,
+    borderRadius: 1,
+    transform: [{ translateX: 4 }, { translateY: 4 }, { rotate: "45deg" }],
+  },
+  collapseAllIcon: {
+    width: 16,
+    height: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 2,
+  },
+  collapseLine: {
+    width: 10,
+    height: 1.5,
+    borderRadius: 1,
+  },
+  collapseChevron: {
+    position: "absolute",
+    bottom: -2,
+    fontSize: 10,
+    lineHeight: 10,
+    fontWeight: "700",
   },
 })

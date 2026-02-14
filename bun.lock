@@ -266,6 +266,7 @@
         "@opencode-ai/sdk": "workspace:*",
         "@react-native-async-storage/async-storage": "2.2.0",
         "@react-native-menu/menu": "1.2.2",
+        "@shopify/flash-list": "2.2.2",
         "expo": "~54.0.33",
         "expo-blur": "15.0.8",
         "expo-clipboard": "8.0.8",
@@ -1858,6 +1859,8 @@
     "@shikijs/types": ["@shikijs/types@3.9.2", "", { "dependencies": { "@shikijs/vscode-textmate": "^10.0.2", "@types/hast": "^3.0.4" } }, "sha512-/M5L0Uc2ljyn2jKvj4Yiah7ow/W+DJSglVafvWAJ/b8AZDeeRAdMu3c2riDzB7N42VD+jSnWxeP9AKtd4TfYVw=="],
 
     "@shikijs/vscode-textmate": ["@shikijs/vscode-textmate@10.0.2", "", {}, "sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg=="],
+
+    "@shopify/flash-list": ["@shopify/flash-list@2.2.2", "https://registry.npmmirror.com/@shopify/flash-list/-/flash-list-2.2.2.tgz", { "peerDependencies": { "@babel/runtime": "*", "react": "*", "react-native": "*" } }, "sha512-YrvLBK5FCpvuX+d9QvJvjVqyi4eBUaEamkyfh9CjPdF6c+AukP0RSBh97qHyTwOEaVq21A5ukwgyWMDIbmxpmQ=="],
 
     "@sinclair/typebox": ["@sinclair/typebox@0.27.10", "https://registry.npmmirror.com/@sinclair/typebox/-/typebox-0.27.10.tgz", {}, "sha512-MTBk/3jGLNB2tVxv6uLlFh1iu64iYOQ2PbdOSK3NW8JZsmlaOh2q6sdtKowBhfw8QFLmYNzTW4/oK4uATIi6ZA=="],
 
