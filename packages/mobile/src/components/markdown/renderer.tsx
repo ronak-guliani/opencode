@@ -6,6 +6,7 @@ import { CodeBlock } from "./code-block"
 
 type Props = {
   children: string
+  variant?: "default" | "reasoning"
 }
 
 // Cast for React 19 JSX compatibility
@@ -55,14 +56,19 @@ function rules(theme: Theme) {
   }
 }
 
-function styles(theme: Theme): Record<string, TextStyle | ViewStyle> {
+function stylesForVariant(theme: Theme, variant: "default" | "reasoning"): Record<string, TextStyle | ViewStyle> {
+  const isReasoning = variant === "reasoning"
+  const baseText: TextStyle = isReasoning
+    ? { fontFamily: "Geist", fontStyle: "italic" }
+    : { fontFamily: "Geist" }
+
   return {
-    body: { color: theme.colors.text, fontSize: 15, lineHeight: 22 },
-    paragraph: { marginTop: 0, marginBottom: 8 },
-    heading1: { fontSize: 22, fontWeight: "700" as const, marginBottom: 8, marginTop: 16, color: theme.colors.text },
-    heading2: { fontSize: 19, fontWeight: "700" as const, marginBottom: 6, marginTop: 14, color: theme.colors.text },
-    heading3: { fontSize: 17, fontWeight: "600" as const, marginBottom: 4, marginTop: 12, color: theme.colors.text },
-    heading4: { fontSize: 15, fontWeight: "600" as const, marginBottom: 4, marginTop: 10, color: theme.colors.text },
+    body: { ...baseText, color: theme.colors.text, fontSize: 15, lineHeight: 22 },
+    paragraph: { ...baseText, marginTop: 0, marginBottom: 8 },
+    heading1: { ...baseText, fontSize: 22, fontWeight: "700" as const, marginBottom: 8, marginTop: 16, color: theme.colors.text },
+    heading2: { ...baseText, fontSize: 19, fontWeight: "700" as const, marginBottom: 6, marginTop: 14, color: theme.colors.text },
+    heading3: { ...baseText, fontSize: 17, fontWeight: "600" as const, marginBottom: 4, marginTop: 12, color: theme.colors.text },
+    heading4: { ...baseText, fontSize: 15, fontWeight: "600" as const, marginBottom: 4, marginTop: 10, color: theme.colors.text },
     blockquote: {
       borderLeftWidth: 3,
       borderLeftColor: theme.colors.border,
@@ -70,11 +76,11 @@ function styles(theme: Theme): Record<string, TextStyle | ViewStyle> {
       marginVertical: 6,
       opacity: 0.85,
     },
-    list_item: { marginBottom: 4 },
-    bullet_list: { marginBottom: 8 },
-    ordered_list: { marginBottom: 8 },
-    strong: { fontWeight: "600" as const },
-    em: { fontStyle: "italic" as const },
+    list_item: { ...baseText, marginBottom: 4 },
+    bullet_list: { ...baseText, marginBottom: 8 },
+    ordered_list: { ...baseText, marginBottom: 8 },
+    strong: { ...baseText, fontWeight: "600" as const },
+    em: { ...baseText, fontStyle: "italic" as const },
     s: { textDecorationLine: "line-through" as const },
     hr: {
       backgroundColor: theme.colors.border,
@@ -88,16 +94,16 @@ function styles(theme: Theme): Record<string, TextStyle | ViewStyle> {
       marginVertical: 6,
     },
     thead: { backgroundColor: theme.colors.surface },
-    th: { padding: 8, fontWeight: "600" as const, color: theme.colors.text },
-    td: { padding: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.border },
+    th: { ...baseText, padding: 8, fontWeight: "600" as const, color: theme.colors.text },
+    td: { ...baseText, padding: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.border },
     tr: { flexDirection: "row" as const },
   }
 }
 
-export const MarkdownRenderer = memo(function MarkdownRenderer({ children }: Props) {
+export const MarkdownRenderer = memo(function MarkdownRenderer({ children, variant = "default" }: Props) {
   const theme = useTheme()
   const mdRules = useMemo(() => rules(theme), [theme])
-  const mdStyles = useMemo(() => styles(theme), [theme])
+  const mdStyles = useMemo(() => stylesForVariant(theme, variant), [theme, variant])
 
   return (
     <Markdown rules={mdRules} style={mdStyles}>

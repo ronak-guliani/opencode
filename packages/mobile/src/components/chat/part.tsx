@@ -8,8 +8,6 @@ import type {
   ReasoningPart,
   RetryPart,
   SnapshotPart,
-  StepFinishPart,
-  StepStartPart,
   TextPart,
   ToolPart,
 } from "@opencode-ai/sdk/client"
@@ -42,9 +40,9 @@ export const PartRenderer = memo(function PartRenderer({
     case "file":
       return <FilePartView part={part} />
     case "step-start":
-      return <StepStartPartView part={part} />
+      return null
     case "step-finish":
-      return <StepFinishPartView part={part} />
+      return null
     case "snapshot":
       return <SnapshotPartView part={part} />
     case "patch":
@@ -90,9 +88,9 @@ function ReasoningPartView({ part, renderMarkdown }: { part: ReasoningPart; rend
     <View style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
       <Text style={[styles.infoTitle, { color: theme.colors.textSecondary }]}>Reasoning</Text>
       {renderMarkdown ? (
-        <MarkdownRenderer>{text}</MarkdownRenderer>
+        <MarkdownRenderer variant="reasoning">{text}</MarkdownRenderer>
       ) : (
-        <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]} numberOfLines={8}>
+        <Text style={[styles.infoBody, styles.reasoningBody, { color: theme.colors.textSecondary }]} numberOfLines={8}>
           {text}
         </Text>
       )}
@@ -278,20 +276,6 @@ function FilePartView({ part }: { part: FilePart }) {
   )
 }
 
-function StepStartPartView({ part }: { part: StepStartPart }) {
-  return <InfoPart title="Step started" detail={part.snapshot ? `Snapshot: ${short(part.snapshot)}` : "Running..."} />
-}
-
-function StepFinishPartView({ part }: { part: StepFinishPart }) {
-  const tokens = part.tokens.input + part.tokens.output + part.tokens.reasoning
-  return (
-    <InfoPart
-      title="Step finished"
-      detail={`${part.reason}${tokens > 0 ? ` · ${tokens} tokens` : ""}${part.cost ? ` · $${part.cost.toFixed(4)}` : ""}`}
-    />
-  )
-}
-
 function SnapshotPartView({ part }: { part: SnapshotPart }) {
   return <InfoPart title="Snapshot" detail={short(part.snapshot)} />
 }
@@ -419,11 +403,15 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   infoCode: {
-    fontFamily: "Menlo",
+    fontFamily: "Geist Mono",
     fontSize: 12,
     lineHeight: 17,
     borderRadius: 8,
     padding: 8,
+  },
+  reasoningBody: {
+    fontFamily: "Geist",
+    fontStyle: "italic",
   },
   infoLink: {
     fontSize: 12,

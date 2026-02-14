@@ -1,14 +1,29 @@
+import { useEffect, useState } from "react"
 import { View, Text, StyleSheet, ActivityIndicator } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useConnection } from "../store/connection"
 import { useTheme } from "../theme"
 
+const RECONNECT_BANNER_DELAY_MS = 5000
+
 export function ConnectionBanner() {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
   const stream = useConnection((s) => s.stream)
+  const [showBanner, setShowBanner] = useState(false)
 
-  if (stream !== "reconnecting") return null
+  useEffect(() => {
+    if (stream !== "reconnecting") {
+      setShowBanner(false)
+      return
+    }
+    const timer = setTimeout(() => {
+      setShowBanner(true)
+    }, RECONNECT_BANNER_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [stream])
+
+  if (stream !== "reconnecting" || !showBanner) return null
 
   return (
     <View

@@ -31,7 +31,7 @@
       [
         "expo-font",
         {
-          "fonts": ["./assets/fonts/geist.ttf", "./assets/fonts/geist-mono.ttf"]
+          "fonts": ["./assets/fonts/geist.ttf", "./assets/fonts/geist-italic.ttf", "./assets/fonts/geist-mono.ttf"]
         }
       ]
     ]

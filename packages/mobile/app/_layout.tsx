@@ -9,11 +9,20 @@ import { useSettings } from "../src/store/settings"
 import { bootstrap } from "../src/api/bootstrap"
 import { useTheme } from "../src/theme"
 
-Text.defaultProps = Text.defaultProps ?? {}
-TextInput.defaultProps = TextInput.defaultProps ?? {}
+type TextDefaultsCarrier = {
+  defaultProps?: {
+    style?: unknown
+  }
+}
 
-Text.defaultProps.style = [{ fontFamily: "Geist" }, Text.defaultProps.style]
-TextInput.defaultProps.style = [{ fontFamily: "Geist" }, TextInput.defaultProps.style]
+const TextWithDefaults = Text as unknown as TextDefaultsCarrier
+const TextInputWithDefaults = TextInput as unknown as TextDefaultsCarrier
+
+TextWithDefaults.defaultProps = TextWithDefaults.defaultProps ?? {}
+TextInputWithDefaults.defaultProps = TextInputWithDefaults.defaultProps ?? {}
+
+TextWithDefaults.defaultProps.style = [{ fontFamily: "Geist" }, TextWithDefaults.defaultProps.style]
+TextInputWithDefaults.defaultProps.style = [{ fontFamily: "Geist" }, TextInputWithDefaults.defaultProps.style]
 
 export default function RootLayout() {
   const [ready, setReady] = useState(false)

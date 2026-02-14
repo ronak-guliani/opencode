@@ -12,6 +12,7 @@ import {
 } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { BlurView } from "expo-blur"
+import { LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
 import * as ZeegoContextMenu from "zeego/context-menu"
 import * as Haptics from "expo-haptics"
 import * as Clipboard from "expo-clipboard"
@@ -43,6 +44,11 @@ const MenuItem = ZeegoContextMenu.Item as React.ComponentType<{
 const MenuItemTitle = ZeegoContextMenu.ItemTitle as React.ComponentType<{ children?: React.ReactNode }>
 const MenuItemIcon = ZeegoContextMenu.ItemIcon as React.ComponentType<{
   ios?: { name: string }
+  children?: React.ReactNode
+}>
+const Glass = LiquidGlassView as React.ComponentType<{
+  interactive?: boolean
+  style?: unknown
   children?: React.ReactNode
 }>
 const SWIPE_SURFACE_BLUR_INTENSITY = 80
@@ -236,7 +242,7 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
       <View style={styles.header}>
         <Text style={[styles.headerTitle, { color: theme.colors.text }]}>Threads</Text>
         <View style={styles.headerActions}>
-          <HeaderIconButton icon="plus-square" label="New Session" onPress={() => handleCreateSession()} />
+          <HeaderIconButton icon="compose" label="New Session" onPress={() => handleCreateSession()} />
           <HeaderIconButton
             icon={allCollapsed ? "expand-all" : "collapse-all"}
             label={allCollapsed ? "Expand all projects" : "Collapse all projects"}
@@ -246,28 +252,45 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
         </View>
       </View>
 
-      <View
-        style={[
-          styles.searchContainer,
-          {
-            backgroundColor: theme.colors.surface,
-            borderColor: theme.colors.border,
-          },
-        ]}
-      >
-        <SearchIcon color={theme.colors.textTertiary} />
-        <TextInput
-          style={[styles.searchInput, { color: theme.colors.text }]}
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Search sessions..."
-          placeholderTextColor={theme.colors.textTertiary}
-          autoCapitalize="none"
-          autoCorrect={false}
-          clearButtonMode="while-editing"
-          returnKeyType="search"
-        />
-      </View>
+      {isLiquidGlassSupported ? (
+        <Glass interactive style={styles.searchGlass}>
+          <SearchIcon color={theme.colors.textTertiary} />
+          <TextInput
+            style={[styles.searchInput, { color: theme.colors.text }]}
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search sessions..."
+            placeholderTextColor={theme.colors.textTertiary}
+            autoCapitalize="none"
+            autoCorrect={false}
+            clearButtonMode="while-editing"
+            returnKeyType="search"
+          />
+        </Glass>
+      ) : (
+        <View
+          style={[
+            styles.searchContainer,
+            {
+              backgroundColor: theme.colors.surface,
+              borderColor: theme.colors.border,
+            },
+          ]}
+        >
+          <SearchIcon color={theme.colors.textTertiary} />
+          <TextInput
+            style={[styles.searchInput, { color: theme.colors.text }]}
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search sessions..."
+            placeholderTextColor={theme.colors.textTertiary}
+            autoCapitalize="none"
+            autoCorrect={false}
+            clearButtonMode="while-editing"
+            returnKeyType="search"
+          />
+        </View>
+      )}
 
       {loading && sessions.length === 0 ? (
         <SessionListSkeleton />
@@ -439,28 +462,53 @@ const HeaderIconButton = memo(function HeaderIconButton({
   label,
   onPress,
 }: {
-  icon: "plus-square" | "collapse-all" | "expand-all" | "settings"
+  icon: "compose" | "collapse-all" | "expand-all" | "settings"
   label: string
   onPress: () => void
 }) {
   const theme = useTheme()
   const color = theme.colors.textSecondary
+  const iconNode =
+    icon === "compose" ? (
+      <ComposeIcon color={color} />
+    ) : icon === "collapse-all" ? (
+      <CollapseAllIcon color={color} mode="collapse" />
+    ) : icon === "expand-all" ? (
+      <CollapseAllIcon color={color} mode="expand" />
+    ) : (
+      <Text style={[styles.settingsGlyph, { color }]}>⚙︎</Text>
+    )
+
+  if (isLiquidGlassSupported) {
+    return (
+      <Glass interactive style={styles.headerIconGlass}>
+        <Pressable
+          style={({ pressed }) => [styles.headerIconButton, pressed && styles.headerIconButtonPressed]}
+          onPress={onPress}
+          accessibilityRole="button"
+          accessibilityLabel={label}
+          hitSlop={8}
+        >
+          {iconNode}
+        </Pressable>
+      </Glass>
+    )
+  }
+
   return (
     <Pressable
-      style={[styles.headerIconButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+      style={({ pressed }) => [
+        styles.headerIconButton,
+        styles.headerIconButtonFallback,
+        { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
+        pressed && styles.headerIconButtonPressed,
+      ]}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={label}
+      hitSlop={8}
     >
-      {icon === "plus-square" ? (
-        <PlusSquareIcon color={color} />
-      ) : icon === "collapse-all" ? (
-        <CollapseAllIcon color={color} mode="collapse" />
-      ) : icon === "expand-all" ? (
-        <CollapseAllIcon color={color} mode="expand" />
-      ) : (
-        <Text style={[styles.settingsGlyph, { color }]}>⚙︎</Text>
-      )}
+      {iconNode}
     </Pressable>
   )
 })
@@ -483,11 +531,12 @@ const PlusIcon = memo(function PlusIcon({ color }: { color: string }) {
   )
 })
 
-const PlusSquareIcon = memo(function PlusSquareIcon({ color }: { color: string }) {
+const ComposeIcon = memo(function ComposeIcon({ color }: { color: string }) {
   return (
-    <View style={[styles.plusSquareIcon, { borderColor: color }]}>
-      <View style={[styles.plusSquareHorizontal, { backgroundColor: color }]} />
-      <View style={[styles.plusSquareVertical, { backgroundColor: color }]} />
+    <View style={styles.composeIcon}>
+      <View style={[styles.composeBox, { borderColor: color }]} />
+      <View style={[styles.composePencilShaft, { backgroundColor: color }]} />
+      <View style={[styles.composePencilTip, { borderLeftColor: color }]} />
     </View>
   )
 })
@@ -550,37 +599,59 @@ const styles = StyleSheet.create({
   headerActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 8,
   },
   headerIconButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerIconButtonFallback: {
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  headerIconButtonPressed: {
+    opacity: 0.6,
+  },
+  headerIconGlass: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
   },
   searchContainer: {
     marginHorizontal: 16,
     marginBottom: 10,
-    borderRadius: 10,
+    borderRadius: 16,
     borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  searchGlass: {
+    marginHorizontal: 16,
+    marginBottom: 10,
+    borderRadius: 18,
+    minHeight: 42,
+    overflow: "hidden",
     flexDirection: "row",
     alignItems: "center",
   },
   searchInput: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 15,
     paddingLeft: 8,
     paddingRight: 12,
-    paddingVertical: 8,
+    paddingVertical: 9,
   },
   list: {
     flex: 1,
   },
   listContent: {
     paddingHorizontal: 10,
-    gap: 2,
+    gap: 4,
   },
   projectRow: {
     flexDirection: "row",
@@ -588,7 +659,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    marginTop: 6,
+    marginTop: 8,
+    marginBottom: 2,
     gap: 8,
   },
   projectMain: {
@@ -632,12 +704,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingLeft: 8,
     paddingRight: 8,
-    paddingVertical: 9,
+    paddingVertical: 11,
     gap: 8,
   },
   sessionIndent: {
     paddingLeft: 34,
     paddingRight: 4,
+    paddingTop: 2,
+    paddingBottom: 6,
   },
   sessionMain: {
     flex: 1,
@@ -714,25 +788,41 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 1,
   },
-  plusSquareIcon: {
+  composeIcon: {
     width: 16,
     height: 16,
+  },
+  composeBox: {
+    position: "absolute",
+    left: 1.2,
+    bottom: 1.2,
+    width: 10.8,
+    height: 10.8,
     borderWidth: 1.4,
-    borderRadius: 3,
-    alignItems: "center",
-    justifyContent: "center",
+    borderRadius: 2.4,
   },
-  plusSquareHorizontal: {
+  composePencilShaft: {
     position: "absolute",
-    width: 8,
-    height: 1.5,
+    right: 0.6,
+    top: 1.2,
+    width: 9,
+    height: 1.7,
     borderRadius: 1,
+    transform: [{ rotate: "-38deg" }],
   },
-  plusSquareVertical: {
+  composePencilTip: {
     position: "absolute",
-    width: 1.5,
-    height: 8,
-    borderRadius: 1,
+    right: 6.8,
+    top: 4.9,
+    width: 0,
+    height: 0,
+    borderTopWidth: 1.8,
+    borderBottomWidth: 1.8,
+    borderRightWidth: 0,
+    borderLeftWidth: 2.8,
+    borderTopColor: "transparent",
+    borderBottomColor: "transparent",
+    transform: [{ rotate: "-38deg" }],
   },
   searchGlyph: {
     width: 14,
