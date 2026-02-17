@@ -20,6 +20,7 @@ export default function SessionIndex() {
   const [sending, setSending] = useState(false)
   const inputRef = useRef<TextInput>(null)
   const [pickerVisible, setPickerVisible] = useState(false)
+  const [pickerAnchor, setPickerAnchor] = useState<{ x: number; y: number } | null>(null)
 
   useEffect(() => {
     select(null)
@@ -73,7 +74,14 @@ export default function SessionIndex() {
       </Text>
     </Pressable>
   )
-  const modelButton = <ModelPickerIconButton onPress={() => setPickerVisible(true)} />
+  const modelButton = (
+    <ModelPickerIconButton
+      onPress={(point) => {
+        setPickerAnchor(point)
+        setPickerVisible(true)
+      }}
+    />
+  )
 
   const GlassContainer = LiquidGlassContainerView as React.ComponentType<{
     spacing?: number
@@ -163,7 +171,7 @@ export default function SessionIndex() {
           )}
         </View>
       </Sticky>
-      <ModelPicker visible={pickerVisible} onClose={() => setPickerVisible(false)} />
+      <ModelPicker visible={pickerVisible} onClose={() => setPickerVisible(false)} anchor={pickerAnchor} />
     </View>
   )
 }

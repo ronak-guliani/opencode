@@ -1,11 +1,28 @@
-import { useMemo, useCallback, memo, useState, useEffect } from "react"
-import { View, Text, Pressable, FlatList, StyleSheet, Modal, useWindowDimensions, Platform, TextInput } from "react-native"
+import { useMemo, useCallback, memo, useState, useEffect, useRef } from "react"
+import {
+  View,
+  Text,
+  Pressable,
+  SectionList,
+  StyleSheet,
+  Modal,
+  useWindowDimensions,
+  Platform,
+  TextInput,
+  type GestureResponderEvent,
+} from "react-native"
 import { BlurView } from "expo-blur"
 import { LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import * as Haptics from "expo-haptics"
+import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated"
 import { useSettings, modelName, modelKey } from "../store/settings"
 import { useTheme, type Theme } from "../theme"
+
+export type ModelPoint = {
+  x: number
+  y: number
+}
 
 type ModelItem = {
   key: string
@@ -18,9 +35,17 @@ type ModelItem = {
   removed: boolean
 }
 
+type ModelSection = {
+  providerID: string
+  providerName: string
+  favorite: boolean
+  data: ModelItem[]
+}
+
 type Props = {
   visible: boolean
   onClose: () => void
+  anchor?: ModelPoint | null
 }
 
 const POPULAR_PROVIDERS = ["opencode", "anthropic", "github-copilot", "openai", "google", "openrouter", "vercel"] as const
@@ -40,15 +65,18 @@ function compareModelOrder(a: ModelItem, b: ModelItem) {
   if (a.favorite && !b.favorite) return -1
   if (!a.favorite && b.favorite) return 1
 
-  const provider = compareProviderOrder(a.providerID, a.providerName, b.providerID, b.providerName)
-  if (provider !== 0) return provider
-
   const name = a.name.localeCompare(b.name)
   if (name !== 0) return name
   return a.id.localeCompare(b.id)
 }
 
-export function ModelPicker({ visible, onClose }: Props) {
+function compareSectionOrder(a: ModelSection, b: ModelSection) {
+  if (a.favorite && !b.favorite) return -1
+  if (!a.favorite && b.favorite) return 1
+  return compareProviderOrder(a.providerID, a.providerName, b.providerID, b.providerName)
+}
+
+export function ModelPicker({ visible, onClose, anchor = null }: Props) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
@@ -63,12 +91,80 @@ export function ModelPicker({ visible, onClose }: Props) {
   const activeName = useSettings(modelName)
   const [query, setQuery] = useState("")
   const [showRemoved, setShowRemoved] = useState(false)
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const closing = useRef(false)
+
+  const panel = useSharedValue(0)
+  const shade = useSharedValue(0)
+
+  const popupWidth = Math.min(windowWidth - 24, 560)
+  const popupHeight = Math.min(windowHeight - insets.top - insets.bottom - 24, 700)
+
+  const centerX = windowWidth / 2
+  const centerY = windowHeight / 2
+  const startX = anchor?.x ?? centerX
+  const startY = anchor?.y ?? centerY
+  const offsetX = startX - centerX
+  const offsetY = startY - centerY
 
   useEffect(() => {
-    if (visible) return
+    if (visible) {
+      closing.current = false
+      panel.value = 0
+      shade.value = 0
+      shade.value = withTiming(1, { duration: 180, easing: Easing.out(Easing.quad) })
+      panel.value = withSpring(1, {
+        damping: 22,
+        stiffness: 290,
+        mass: 0.72,
+        overshootClamping: false,
+      })
+      return
+    }
+
     setQuery("")
     setShowRemoved(false)
-  }, [visible])
+  }, [panel, shade, visible])
+
+  const finishClose = useCallback(() => {
+    closing.current = false
+    onClose()
+  }, [onClose])
+
+  const handleClose = useCallback(() => {
+    if (closing.current) return
+    closing.current = true
+    panel.value = withTiming(0, {
+      duration: 170,
+      easing: Easing.bezier(0.18, 0.92, 0.2, 1),
+    })
+    shade.value = withTiming(
+      0,
+      {
+        duration: 160,
+        easing: Easing.out(Easing.quad),
+      },
+      (finished) => {
+        if (finished) runOnJS(finishClose)()
+      },
+    )
+  }, [finishClose, panel, shade])
+
+  const backdropStyle = useAnimatedStyle(() => ({
+    opacity: shade.value,
+  }))
+
+  const popupStyle = useAnimatedStyle(
+    () => ({
+      opacity: panel.value,
+      transform: [
+        { translateX: offsetX * (1 - panel.value) },
+        { translateY: offsetY * (1 - panel.value) },
+        { scale: 0.82 + panel.value * 0.18 },
+      ],
+    }),
+    [offsetX, offsetY],
+  )
 
   const allModels = useMemo<ModelItem[]>(() => {
     if (!providerData) return []
@@ -96,7 +192,7 @@ export function ModelPicker({ visible, onClose }: Props) {
       }
     }
 
-    return result.sort(compareModelOrder)
+    return result
   }, [providerData, favorites, removed])
 
   const models = useMemo(() => {
@@ -108,12 +204,46 @@ export function ModelPicker({ visible, onClose }: Props) {
     })
   }, [allModels, query, showRemoved])
 
+  const sections = useMemo<ModelSection[]>(() => {
+    const map = new Map<string, ModelSection>()
+
+    for (const item of models) {
+      const section = map.get(item.providerID)
+      if (!section) {
+        map.set(item.providerID, {
+          providerID: item.providerID,
+          providerName: item.providerName,
+          favorite: item.favorite,
+          data: [item],
+        })
+        continue
+      }
+
+      section.data.push(item)
+      if (item.favorite) section.favorite = true
+    }
+
+    return Array.from(map.values())
+      .map((section) => ({
+        ...section,
+        data: section.data.sort(compareModelOrder),
+      }))
+      .sort(compareSectionOrder)
+  }, [models])
+
   const selected = current ? modelKey(current) : null
   const favoriteCount = useMemo(() => allModels.filter((item) => item.favorite).length, [allModels])
   const removedCount = useMemo(() => allModels.filter((item) => item.removed).length, [allModels])
 
-  const popupWidth = Math.min(windowWidth - 24, 560)
-  const popupHeight = Math.min(windowHeight - insets.top - insets.bottom - 24, 700)
+  const visibleSections = useMemo(
+    () => sections.map((section) => (collapsed[section.providerID] ? { ...section, data: [] } : section)),
+    [collapsed, sections],
+  )
+
+  const sectionCount = useMemo(
+    () => Object.fromEntries(sections.map((section) => [section.providerID, section.data.length])),
+    [sections],
+  )
 
   const selectedProvider = useMemo(() => {
     if (!current || !providerData) return "Default"
@@ -133,35 +263,52 @@ export function ModelPicker({ visible, onClose }: Props) {
       if (item.removed) return
       Haptics.selectionAsync()
       setModel({ providerID: item.providerID, modelID: item.id })
-      onClose()
+      handleClose()
     },
-    [onClose, setModel],
+    [handleClose, setModel],
   )
 
   const handleDefault = useCallback(() => {
     Haptics.selectionAsync()
     setModel(null)
-    onClose()
-  }, [onClose, setModel])
+    handleClose()
+  }, [handleClose, setModel])
 
-  const handleFavorite = useCallback((item: ModelItem) => {
-    Haptics.selectionAsync()
-    toggleFavorite({ providerID: item.providerID, modelID: item.id })
-  }, [toggleFavorite])
+  const handleFavorite = useCallback(
+    (item: ModelItem) => {
+      Haptics.selectionAsync()
+      toggleFavorite({ providerID: item.providerID, modelID: item.id })
+    },
+    [toggleFavorite],
+  )
 
-  const handleRemove = useCallback((item: ModelItem) => {
-    Haptics.selectionAsync()
-    removeModel({ providerID: item.providerID, modelID: item.id })
-  }, [removeModel])
+  const handleRemove = useCallback(
+    (item: ModelItem) => {
+      Haptics.selectionAsync()
+      removeModel({ providerID: item.providerID, modelID: item.id })
+    },
+    [removeModel],
+  )
 
-  const handleRestore = useCallback((item: ModelItem) => {
-    Haptics.selectionAsync()
-    restoreModel({ providerID: item.providerID, modelID: item.id })
-  }, [restoreModel])
+  const handleRestore = useCallback(
+    (item: ModelItem) => {
+      Haptics.selectionAsync()
+      restoreModel({ providerID: item.providerID, modelID: item.id })
+    },
+    [restoreModel],
+  )
 
   const handleRemovedToggle = useCallback(() => {
     Haptics.selectionAsync()
     setShowRemoved((state) => !state)
+  }, [])
+
+  const toggleProvider = useCallback((providerID: string) => {
+    Haptics.selectionAsync()
+    setCollapsed((state) => ({
+      ...state,
+      [providerID]: !state[providerID],
+    }))
   }, [])
 
   const Glass = LiquidGlassView as React.ComponentType<{
@@ -182,7 +329,13 @@ export function ModelPicker({ visible, onClose }: Props) {
             {selectedProvider}
           </Text>
         </View>
-        <Pressable onPress={onClose} style={styles.closeButton} hitSlop={10} accessibilityRole="button" accessibilityLabel="Close model picker">
+        <Pressable
+          onPress={handleClose}
+          style={styles.closeButton}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Close model picker"
+        >
           <Text style={[styles.closeGlyph, { color: theme.colors.textTertiary }]}>{"\u2715"}</Text>
         </Pressable>
       </View>
@@ -234,9 +387,25 @@ export function ModelPicker({ visible, onClose }: Props) {
         </Text>
       </View>
 
-      <FlatList
-        data={models}
+      <SectionList
+        sections={visibleSections}
         keyExtractor={(item) => item.key}
+        renderSectionHeader={({ section }) => (
+          <Pressable
+            style={[styles.sectionHeader, { borderTopColor: theme.colors.border + "33" }]}
+            onPress={() => toggleProvider(section.providerID)}
+            accessibilityRole="button"
+            accessibilityLabel={`Toggle ${section.providerName} models`}
+          >
+            <View style={styles.sectionLeft}>
+              <Text style={[styles.sectionChevron, { color: theme.colors.textTertiary }]}>
+                {collapsed[section.providerID] ? "\u25B8" : "\u25BE"}
+              </Text>
+              <Text style={[styles.sectionName, { color: theme.colors.textSecondary }]}>{section.providerName}</Text>
+            </View>
+            <Text style={[styles.sectionCount, { color: theme.colors.textTertiary }]}>{sectionCount[section.providerID] ?? 0}</Text>
+          </Pressable>
+        )}
         renderItem={({ item }) => (
           <PickerRow
             item={item}
@@ -259,40 +428,43 @@ export function ModelPicker({ visible, onClose }: Props) {
         scrollEnabled
         nestedScrollEnabled
         showsVerticalScrollIndicator={false}
+        stickySectionHeadersEnabled={false}
       />
     </>
   )
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="none" onRequestClose={handleClose}>
       <View style={styles.modalRoot}>
-        <Pressable style={styles.backdrop} onPress={onClose}>
-          <View />
-        </Pressable>
+        <Animated.View style={[styles.backdrop, backdropStyle]}>
+          <Pressable style={styles.backdropPress} onPress={handleClose}>
+            <View />
+          </Pressable>
+        </Animated.View>
         <View style={[styles.center, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}>
-          <View
-            style={[
-              styles.popup,
-              {
-                width: popupWidth,
-                height: popupHeight,
-              },
-            ]}
-          >
-            {isLiquidGlassSupported ? (
-              <Glass style={[styles.surface, { borderRadius: 28 }]}>
-                {content}
-              </Glass>
-            ) : (
-              <BlurView
-                intensity={80}
-                tint={theme.colors.background === "#09090b" ? "dark" : "light"}
-                style={[styles.surface, { borderRadius: 20, borderColor: theme.colors.border + "70" }]}
-              >
-                {content}
-              </BlurView>
-            )}
-          </View>
+          <Animated.View style={popupStyle}>
+            <View
+              style={[
+                styles.popup,
+                {
+                  width: popupWidth,
+                  height: popupHeight,
+                },
+              ]}
+            >
+              {isLiquidGlassSupported ? (
+                <Glass style={[styles.surface, { borderRadius: 28 }]}>{content}</Glass>
+              ) : (
+                <BlurView
+                  intensity={80}
+                  tint={theme.colors.background === "#09090b" ? "dark" : "light"}
+                  style={[styles.surface, { borderRadius: 20, borderColor: theme.colors.border + "70" }]}
+                >
+                  {content}
+                </BlurView>
+              )}
+            </View>
+          </Animated.View>
         </View>
       </View>
     </Modal>
@@ -379,11 +551,22 @@ const PickerRow = memo(function PickerRow({
   )
 })
 
-export function ModelPickerIconButton({ onPress }: { onPress: () => void }) {
+export function ModelPickerIconButton({ onPress }: { onPress: (point: ModelPoint) => void }) {
   const theme = useTheme()
+
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      onPress({
+        x: event.nativeEvent.pageX,
+        y: event.nativeEvent.pageY,
+      })
+    },
+    [onPress],
+  )
+
   return (
     <Pressable
-      onPress={onPress}
+      onPress={handlePress}
       style={styles.iconButton}
       hitSlop={12}
       accessibilityRole="button"
@@ -401,6 +584,9 @@ const styles = StyleSheet.create({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.16)",
+  },
+  backdropPress: {
+    ...StyleSheet.absoluteFillObject,
   },
   center: {
     flex: 1,
@@ -525,6 +711,34 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingBottom: 10,
+  },
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 7,
+  },
+  sectionLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  sectionChevron: {
+    fontSize: 10,
+    width: 10,
+  },
+  sectionName: {
+    fontSize: 12,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  sectionCount: {
+    fontSize: 11,
+    fontWeight: "500",
   },
   empty: {
     paddingVertical: 34,
