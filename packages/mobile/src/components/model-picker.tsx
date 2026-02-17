@@ -97,8 +97,8 @@ export function ModelPicker({ visible, onClose, anchor = null }: Props) {
   const panel = useSharedValue(0)
   const shade = useSharedValue(0)
 
-  const popupWidth = Math.min(windowWidth - 24, 560)
-  const popupHeight = Math.min(windowHeight - insets.top - insets.bottom - 24, 700)
+  const popupWidth = Math.round(Math.min(windowWidth - 24, 560) * 0.75)
+  const popupHeight = Math.round(Math.min(windowHeight - insets.top - insets.bottom - 24, 700) * 0.75)
 
   const centerX = windowWidth / 2
   const centerY = windowHeight / 2
@@ -453,14 +453,24 @@ export function ModelPicker({ visible, onClose, anchor = null }: Props) {
               ]}
             >
               {isLiquidGlassSupported ? (
-                <Glass style={[styles.surface, { borderRadius: 28 }]}>{content}</Glass>
+                <Glass
+                  style={[
+                    styles.surface,
+                    {
+                      borderRadius: 28,
+                      borderColor: theme.colors.border + "c0",
+                    },
+                  ]}
+                >
+                  <View style={[styles.fill, { backgroundColor: theme.colors.surface + "f2" }]}>{content}</View>
+                </Glass>
               ) : (
                 <BlurView
                   intensity={80}
                   tint={theme.colors.background === "#09090b" ? "dark" : "light"}
-                  style={[styles.surface, { borderRadius: 20, borderColor: theme.colors.border + "70" }]}
+                  style={[styles.surface, { borderRadius: 20, borderColor: theme.colors.border + "c0" }]}
                 >
-                  {content}
+                  <View style={[styles.fill, { backgroundColor: theme.colors.surface + "f2" }]}>{content}</View>
                 </BlurView>
               )}
             </View>
@@ -610,6 +620,9 @@ const styles = StyleSheet.create({
     flex: 1,
     overflow: "hidden",
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  fill: {
+    flex: 1,
   },
   header: {
     flexDirection: "row",
