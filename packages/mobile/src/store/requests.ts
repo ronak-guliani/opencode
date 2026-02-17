@@ -32,6 +32,8 @@ type RequestState = {
   replyPermission: (requestID: string, reply: PermissionReply, message?: string) => Promise<void>
   replyQuestion: (requestID: string, answers: QuestionAnswer[]) => Promise<void>
   rejectQuestion: (requestID: string) => Promise<void>
+  _upsertPermission: (permission: Permission) => void
+  _removePermission: (requestID: string) => void
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -83,9 +85,7 @@ export const useRequests = createStore<RequestState>((set, get) => ({
         message,
       }),
     })
-    set((state) => ({
-      permissions: state.permissions.filter((item) => item.id !== requestID),
-    }))
+    get()._removePermission(requestID)
   },
 
   replyQuestion: async (requestID, answers) => {
@@ -109,6 +109,24 @@ export const useRequests = createStore<RequestState>((set, get) => ({
     })
     set((state) => ({
       questions: state.questions.filter((item) => item.id !== requestID),
+    }))
+  },
+
+  _upsertPermission: (permission) => {
+    set((state) => {
+      const idx = state.permissions.findIndex((item) => item.id === permission.id)
+      if (idx >= 0) {
+        const next = [...state.permissions]
+        next[idx] = permission
+        return { permissions: next }
+      }
+      return { permissions: [permission, ...state.permissions] }
+    })
+  },
+
+  _removePermission: (requestID) => {
+    set((state) => ({
+      permissions: state.permissions.filter((item) => item.id !== requestID),
     }))
   },
 }))

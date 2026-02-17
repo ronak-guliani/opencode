@@ -16,7 +16,7 @@ export const light = {
     error: "#dc2626",
     success: "#16a34a",
     warning: "#ca8a04",
-    userBubble: "#2563eb",
+    userBubble: "#00366A",
     userBubbleText: "#ffffff",
     assistantBubble: "#f4f4f5",
     assistantBubbleText: "#09090b",

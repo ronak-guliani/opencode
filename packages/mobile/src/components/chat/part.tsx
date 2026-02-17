@@ -1,5 +1,14 @@
-import { memo, useState, useCallback } from "react"
-import { View, Text, Pressable, StyleSheet, LayoutAnimation, Linking } from "react-native"
+import { memo, useState, useCallback, useEffect } from "react"
+import { View, Text, Pressable, StyleSheet, Linking } from "react-native"
+import Animated, {
+  Easing,
+  FadeIn,
+  FadeOut,
+  LinearTransition,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from "react-native-reanimated"
 import type {
   AgentPart,
   FilePart,
@@ -17,24 +26,24 @@ import { MarkdownRenderer } from "../markdown/renderer"
 type SubtaskPart = Extract<Part, { type: "subtask" }>
 type CompactionPart = Extract<Part, { type: "compaction" }>
 
+const AnimatedView = Animated.View as any
+const AnimatedText = Animated.Text as any
+const COLLAPSIBLE_LAYOUT = LinearTransition.springify().damping(22).stiffness(260).mass(0.7)
+const COLLAPSIBLE_ENTER = FadeIn.duration(140).easing(Easing.out(Easing.cubic))
+const COLLAPSIBLE_EXIT = FadeOut.duration(110).easing(Easing.in(Easing.cubic))
+
 type Props = {
   part: Part
   isUser: boolean
-  renderMarkdown?: boolean
   onHydrateMessage?: (messageID: string) => void
 }
 
-export const PartRenderer = memo(function PartRenderer({
-  part,
-  isUser,
-  renderMarkdown = true,
-  onHydrateMessage,
-}: Props) {
+export const PartRenderer = memo(function PartRenderer({ part, isUser, onHydrateMessage }: Props) {
   switch (part.type) {
     case "text":
-      return <TextPartView part={part} isUser={isUser} renderMarkdown={renderMarkdown} />
+      return <TextPartView part={part} isUser={isUser} />
     case "reasoning":
-      return <ReasoningPartView part={part} renderMarkdown={renderMarkdown} />
+      return <ReasoningPartView part={part} />
     case "tool":
       return <ToolPartView part={part} onHydrateMessage={onHydrateMessage} />
     case "file":
@@ -52,7 +61,7 @@ export const PartRenderer = memo(function PartRenderer({
     case "retry":
       return <RetryPartView part={part} />
     case "subtask":
-      return <SubtaskPartView part={part} renderMarkdown={renderMarkdown} />
+      return <SubtaskPartView part={part} />
     case "compaction":
       return <CompactionPartView part={part} />
     default:
@@ -60,7 +69,7 @@ export const PartRenderer = memo(function PartRenderer({
   }
 })
 
-function TextPartView({ part, isUser, renderMarkdown }: { part: TextPart; isUser: boolean; renderMarkdown: boolean }) {
+function TextPartView({ part, isUser }: { part: TextPart; isUser: boolean }) {
   const theme = useTheme()
   if (!part.text) return null
 
@@ -68,33 +77,40 @@ function TextPartView({ part, isUser, renderMarkdown }: { part: TextPart; isUser
     return <Text style={[styles.text, { color: theme.colors.userBubbleText }]}>{part.text}</Text>
   }
 
-  if (!renderMarkdown) {
-    return (
-      <Text style={[styles.text, { color: theme.colors.textSecondary }]} numberOfLines={8}>
-        {part.text}
-      </Text>
-    )
-  }
-
   return <MarkdownRenderer>{part.text}</MarkdownRenderer>
 }
 
-function ReasoningPartView({ part, renderMarkdown }: { part: ReasoningPart; renderMarkdown: boolean }) {
+function ReasoningPartView({ part }: { part: ReasoningPart }) {
   const theme = useTheme()
+  const [expanded, setExpanded] = useState(false)
   const text = part.text?.trim()
   if (!text) return null
 
+  const toggle = useCallback(() => {
+    setExpanded((v) => !v)
+  }, [])
+
+  const label = `Thought about ${summarizeInline(text, 52)}`
+
   return (
-    <View style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-      <Text style={[styles.infoTitle, { color: theme.colors.textSecondary }]}>Reasoning</Text>
-      {renderMarkdown ? (
-        <MarkdownRenderer variant="reasoning">{text}</MarkdownRenderer>
-      ) : (
-        <Text style={[styles.infoBody, styles.reasoningBody, { color: theme.colors.textSecondary }]} numberOfLines={8}>
-          {text}
+    <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
+      <Pressable style={styles.collapsibleRow} onPress={toggle}>
+        <Text style={[styles.collapsibleLabel, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+          {label}
         </Text>
-      )}
-    </View>
+        <CollapsibleChevron expanded={expanded} color={theme.colors.textTertiary} />
+      </Pressable>
+      {expanded ? (
+        <AnimatedView
+          entering={COLLAPSIBLE_ENTER}
+          exiting={COLLAPSIBLE_EXIT}
+          layout={COLLAPSIBLE_LAYOUT}
+          style={styles.reasoningExpanded}
+        >
+          <MarkdownRenderer variant="reasoning">{text}</MarkdownRenderer>
+        </AnimatedView>
+      ) : null}
+    </AnimatedView>
   )
 }
 
@@ -118,54 +134,40 @@ function ToolPartView({ part, onHydrateMessage }: { part: ToolPart; onHydrateMes
     ) {
       requestHydration()
     }
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut)
     setExpanded((v) => !v)
   }, [expanded, part.state, requestHydration, status])
 
-  const dot =
-    status === "completed"
-      ? theme.colors.success
-      : status === "error"
-        ? theme.colors.error
-        : status === "running"
-          ? theme.colors.warning
-          : theme.colors.textTertiary
-
-  const elapsed =
-    "time" in part.state && part.state.time
-      ? "end" in part.state.time && part.state.time.end
-        ? `${((part.state.time.end - part.state.time.start) / 1000).toFixed(1)}s`
-        : null
-      : null
-
+  const summary = summarizeToolLabel(part, title || part.tool)
+  const elapsed = toolElapsed(part)
   const truncatedOutput =
     status === "completed" && "outputTruncated" in part.state && typeof part.state.outputTruncated === "boolean"
       ? part.state.outputTruncated
       : false
 
   return (
-    <Pressable
-      onPress={toggle}
-      style={[
-        styles.tool,
-        {
-          backgroundColor: theme.colors.surface,
-          borderColor: theme.colors.border,
-          borderRadius: theme.radii.md,
-        },
-      ]}
-    >
-      <View style={styles.toolHeader}>
-        <View style={[styles.statusDot, { backgroundColor: dot }]} />
-        <Text style={[styles.toolName, { color: theme.colors.text }]} numberOfLines={expanded ? undefined : 1}>
-          {title || part.tool}
+    <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
+      <Pressable style={styles.collapsibleRow} onPress={toggle}>
+        <Text style={[styles.collapsibleLabel, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+          {summary}
         </Text>
-        {elapsed && <Text style={[styles.elapsed, { color: theme.colors.textTertiary }]}>{elapsed}</Text>}
-        <Text style={[styles.chevron, { color: theme.colors.textTertiary }]}>{expanded ? "\u25B4" : "\u25BE"}</Text>
-      </View>
-
+        <CollapsibleChevron expanded={expanded} color={theme.colors.textTertiary} />
+      </Pressable>
       {expanded && (
-        <View style={[styles.toolBody, { borderTopColor: theme.colors.border }]}>
+        <AnimatedView
+          entering={COLLAPSIBLE_ENTER}
+          exiting={COLLAPSIBLE_EXIT}
+          layout={COLLAPSIBLE_LAYOUT}
+          style={[
+            styles.toolExpanded,
+            {
+              backgroundColor: theme.colors.surface,
+              borderColor: theme.colors.borderSubtle,
+            },
+          ]}
+        >
+          <Text style={[styles.toolMeta, { color: theme.colors.textTertiary }]}>
+            {(title || part.tool) + (elapsed ? ` · ${elapsed}` : "")}
+          </Text>
           {"input" in part.state && part.state.input && Object.keys(part.state.input).length > 0 && (
             <View style={styles.toolSection}>
               <Text style={[styles.toolLabel, { color: theme.colors.textTertiary }]}>Input</Text>
@@ -230,14 +232,15 @@ function ToolPartView({ part, onHydrateMessage }: { part: ToolPart; onHydrateMes
               </Text>
             </View>
           )}
-        </View>
+        </AnimatedView>
       )}
-    </Pressable>
+    </AnimatedView>
   )
 }
 
 function FilePartView({ part }: { part: FilePart }) {
   const theme = useTheme()
+  const [expanded, setExpanded] = useState(false)
   const name = part.filename || part.source?.path?.split("/").pop() || "Attached file"
   const sourceLabel = part.source
     ? part.source.type === "symbol"
@@ -245,117 +248,320 @@ function FilePartView({ part }: { part: FilePart }) {
       : part.source.path
     : part.mime
 
+  const toggle = useCallback(() => {
+    setExpanded((v) => !v)
+  }, [])
+
+  const label = `Created ${summarizeInline(name, 52)}`
+
   return (
-    <Pressable
-      onPress={() => Linking.openURL(part.url).catch(() => {})}
-      style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
-    >
-      <Text style={[styles.infoTitle, { color: theme.colors.text }]}>File</Text>
-      <Text style={[styles.infoBody, { color: theme.colors.text }]} numberOfLines={1}>
-        {name}
-      </Text>
-      <Text style={[styles.infoSubtle, { color: theme.colors.textTertiary }]} numberOfLines={1}>
-        {sourceLabel}
-      </Text>
-      {part.source?.text?.value ? (
-        <Text
-          style={[
-            styles.infoCode,
-            {
-              backgroundColor: theme.colors.codeBackground,
-              color: theme.colors.codeText,
-            },
-          ]}
-          numberOfLines={8}
-        >
-          {part.source.text.value}
+    <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
+      <Pressable style={styles.collapsibleRow} onPress={toggle}>
+        <Text style={[styles.collapsibleLabel, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+          {label}
         </Text>
+        <CollapsibleChevron expanded={expanded} color={theme.colors.textTertiary} />
+      </Pressable>
+      {expanded ? (
+        <AnimatedView
+          entering={COLLAPSIBLE_ENTER}
+          exiting={COLLAPSIBLE_EXIT}
+          layout={COLLAPSIBLE_LAYOUT}
+          style={[styles.expandedPanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.borderSubtle }]}
+        >
+          <Text style={[styles.infoBody, { color: theme.colors.text }]} numberOfLines={1}>
+            {name}
+          </Text>
+          <Text style={[styles.infoSubtle, { color: theme.colors.textTertiary }]} numberOfLines={1}>
+            {sourceLabel}
+          </Text>
+          {part.source?.text?.value ? (
+            <Text
+              style={[
+                styles.infoCode,
+                {
+                  backgroundColor: theme.colors.codeBackground,
+                  color: theme.colors.codeText,
+                },
+              ]}
+              numberOfLines={8}
+            >
+              {part.source.text.value}
+            </Text>
+          ) : null}
+          <Pressable onPress={() => Linking.openURL(part.url).catch(() => {})}>
+            <Text style={[styles.infoLink, { color: theme.colors.link }]}>Open attachment</Text>
+          </Pressable>
+        </AnimatedView>
       ) : null}
-      <Text style={[styles.infoLink, { color: theme.colors.link }]}>Open attachment</Text>
-    </Pressable>
+    </AnimatedView>
   )
 }
 
 function SnapshotPartView({ part }: { part: SnapshotPart }) {
-  return <InfoPart title="Snapshot" detail={short(part.snapshot)} />
+  const theme = useTheme()
+  const [expanded, setExpanded] = useState(false)
+
+  const toggle = useCallback(() => {
+    setExpanded((v) => !v)
+  }, [])
+
+  return (
+    <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
+      <Pressable style={styles.collapsibleRow} onPress={toggle}>
+        <Text style={[styles.collapsibleLabel, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+          Created snapshot
+        </Text>
+        <CollapsibleChevron expanded={expanded} color={theme.colors.textTertiary} />
+      </Pressable>
+      {expanded ? (
+        <AnimatedView
+          entering={COLLAPSIBLE_ENTER}
+          exiting={COLLAPSIBLE_EXIT}
+          layout={COLLAPSIBLE_LAYOUT}
+          style={[styles.expandedPanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.borderSubtle }]}
+        >
+          <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{short(part.snapshot)}</Text>
+        </AnimatedView>
+      ) : null}
+    </AnimatedView>
+  )
 }
 
 function PatchPartView({ part }: { part: PatchPart }) {
   const theme = useTheme()
+  const [expanded, setExpanded] = useState(false)
   const visible = part.files.slice(0, 8)
   const remaining = Math.max(0, part.files.length - visible.length)
+  const label = `Created ${part.files.length} file ${part.files.length === 1 ? "change" : "changes"}`
+
+  const toggle = useCallback(() => {
+    setExpanded((v) => !v)
+  }, [])
 
   return (
-    <View style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-      <Text style={[styles.infoTitle, { color: theme.colors.text }]}>Patch</Text>
-      <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>
-        {part.files.length} file{part.files.length === 1 ? "" : "s"} changed
-      </Text>
-      {visible.map((file) => (
-        <Text key={`${part.id}:${file}`} style={[styles.infoPath, { color: theme.colors.text }]} numberOfLines={1}>
-          {file}
+    <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
+      <Pressable style={styles.collapsibleRow} onPress={toggle}>
+        <Text style={[styles.collapsibleLabel, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+          {label}
         </Text>
-      ))}
-      {remaining > 0 && (
-        <Text style={[styles.infoSubtle, { color: theme.colors.textTertiary }]}>
-          +{remaining} more file{remaining === 1 ? "" : "s"}
-        </Text>
-      )}
-    </View>
+        <CollapsibleChevron expanded={expanded} color={theme.colors.textTertiary} />
+      </Pressable>
+      {expanded ? (
+        <AnimatedView
+          entering={COLLAPSIBLE_ENTER}
+          exiting={COLLAPSIBLE_EXIT}
+          layout={COLLAPSIBLE_LAYOUT}
+          style={[styles.expandedPanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.borderSubtle }]}
+        >
+          <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>
+            {part.files.length} file{part.files.length === 1 ? "" : "s"} changed
+          </Text>
+          {visible.map((file) => (
+            <Text key={`${part.id}:${file}`} style={[styles.infoPath, { color: theme.colors.text }]} numberOfLines={1}>
+              {file}
+            </Text>
+          ))}
+          {remaining > 0 && (
+            <Text style={[styles.infoSubtle, { color: theme.colors.textTertiary }]}>
+              +{remaining} more file{remaining === 1 ? "" : "s"}
+            </Text>
+          )}
+        </AnimatedView>
+      ) : null}
+    </AnimatedView>
   )
 }
 
 function AgentPartView({ part }: { part: AgentPart }) {
-  return <InfoPart title="Agent" detail={part.name} />
+  const theme = useTheme()
+  const [expanded, setExpanded] = useState(false)
+
+  const toggle = useCallback(() => {
+    setExpanded((v) => !v)
+  }, [])
+
+  return (
+    <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
+      <Pressable style={styles.collapsibleRow} onPress={toggle}>
+        <Text style={[styles.collapsibleLabel, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+          {`Thought about using ${summarizeInline(part.name, 46)}`}
+        </Text>
+        <CollapsibleChevron expanded={expanded} color={theme.colors.textTertiary} />
+      </Pressable>
+      {expanded ? (
+        <AnimatedView
+          entering={COLLAPSIBLE_ENTER}
+          exiting={COLLAPSIBLE_EXIT}
+          layout={COLLAPSIBLE_LAYOUT}
+          style={[styles.expandedPanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.borderSubtle }]}
+        >
+          <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{part.name}</Text>
+        </AnimatedView>
+      ) : null}
+    </AnimatedView>
+  )
 }
 
 function RetryPartView({ part }: { part: RetryPart }) {
+  const theme = useTheme()
+  const [expanded, setExpanded] = useState(false)
   const error = part.error?.data?.message || "Unknown error"
-  return <InfoPart title={`Retry #${part.attempt}`} detail={error} />
+
+  const toggle = useCallback(() => {
+    setExpanded((v) => !v)
+  }, [])
+
+  return (
+    <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
+      <Pressable style={styles.collapsibleRow} onPress={toggle}>
+        <Text style={[styles.collapsibleLabel, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+          {`Thought about retry #${part.attempt}`}
+        </Text>
+        <CollapsibleChevron expanded={expanded} color={theme.colors.textTertiary} />
+      </Pressable>
+      {expanded ? (
+        <AnimatedView
+          entering={COLLAPSIBLE_ENTER}
+          exiting={COLLAPSIBLE_EXIT}
+          layout={COLLAPSIBLE_LAYOUT}
+          style={[styles.expandedPanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.borderSubtle }]}
+        >
+          <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{error}</Text>
+        </AnimatedView>
+      ) : null}
+    </AnimatedView>
+  )
 }
 
-function SubtaskPartView({ part, renderMarkdown }: { part: SubtaskPart; renderMarkdown: boolean }) {
+function SubtaskPartView({ part }: { part: SubtaskPart }) {
   const theme = useTheme()
+  const [expanded, setExpanded] = useState(false)
+
+  const toggle = useCallback(() => {
+    setExpanded((v) => !v)
+  }, [])
+
   return (
-    <View style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-      <Text style={[styles.infoTitle, { color: theme.colors.text }]}>Subtask</Text>
-      <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{part.description}</Text>
-      {part.prompt ? (
-        renderMarkdown ? (
-          <MarkdownRenderer>{part.prompt}</MarkdownRenderer>
-        ) : (
-          <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]} numberOfLines={8}>
-            {part.prompt}
-          </Text>
-        )
+    <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
+      <Pressable style={styles.collapsibleRow} onPress={toggle}>
+        <Text style={[styles.collapsibleLabel, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+          {`Thought about ${summarizeInline(part.description, 52)}`}
+        </Text>
+        <CollapsibleChevron expanded={expanded} color={theme.colors.textTertiary} />
+      </Pressable>
+      {expanded ? (
+        <AnimatedView
+          entering={COLLAPSIBLE_ENTER}
+          exiting={COLLAPSIBLE_EXIT}
+          layout={COLLAPSIBLE_LAYOUT}
+          style={[styles.expandedPanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.borderSubtle }]}
+        >
+          <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{part.description}</Text>
+          {part.prompt ? <MarkdownRenderer>{part.prompt}</MarkdownRenderer> : null}
+          <Text style={[styles.infoSubtle, { color: theme.colors.textTertiary }]}>Agent: {part.agent}</Text>
+        </AnimatedView>
       ) : null}
-      <Text style={[styles.infoSubtle, { color: theme.colors.textTertiary }]}>Agent: {part.agent}</Text>
-    </View>
+    </AnimatedView>
   )
 }
 
 function CompactionPartView({ part }: { part: CompactionPart }) {
+  const theme = useTheme()
+  const [expanded, setExpanded] = useState(false)
+
+  const toggle = useCallback(() => {
+    setExpanded((v) => !v)
+  }, [])
+
+  const detail = part.auto ? "Automatic compaction applied." : "Manual compaction applied."
+
   return (
-    <InfoPart
-      title="Context compacted"
-      detail={part.auto ? "Automatic compaction applied." : "Manual compaction applied."}
-    />
+    <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
+      <Pressable style={styles.collapsibleRow} onPress={toggle}>
+        <Text style={[styles.collapsibleLabel, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+          Thought about context compaction
+        </Text>
+        <CollapsibleChevron expanded={expanded} color={theme.colors.textTertiary} />
+      </Pressable>
+      {expanded ? (
+        <AnimatedView
+          entering={COLLAPSIBLE_ENTER}
+          exiting={COLLAPSIBLE_EXIT}
+          layout={COLLAPSIBLE_LAYOUT}
+          style={[styles.expandedPanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.borderSubtle }]}
+        >
+          <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{detail}</Text>
+        </AnimatedView>
+      ) : null}
+    </AnimatedView>
   )
 }
 
-function InfoPart({ title, detail }: { title: string; detail: string }) {
-  const theme = useTheme()
+function CollapsibleChevron({ expanded, color }: { expanded: boolean; color: string }) {
+  const progress = useSharedValue(expanded ? 1 : 0)
+
+  useEffect(() => {
+    progress.value = withTiming(expanded ? 1 : 0, {
+      duration: 170,
+      easing: Easing.out(Easing.cubic),
+    })
+  }, [expanded, progress])
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${progress.value * 90}deg` }],
+  }))
+
   return (
-    <View style={[styles.infoCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-      <Text style={[styles.infoTitle, { color: theme.colors.text }]}>{title}</Text>
-      <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{detail}</Text>
-    </View>
+    <AnimatedText style={[styles.collapsibleChevron, { color }, animatedStyle]}>{">"}</AnimatedText>
   )
 }
 
 function short(value: string) {
   if (value.length <= 32) return value
   return `${value.slice(0, 16)}...${value.slice(-8)}`
+}
+
+function summarizeInline(value: string, maxChars = 56) {
+  const normalized = value.replace(/\s+/g, " ").trim()
+  if (!normalized) return "the next step"
+  if (normalized.length <= maxChars) return normalized
+  return `${normalized.slice(0, maxChars - 1).trimEnd()}…`
+}
+
+function isCreateTool(tool: string, title: string) {
+  const normalizedTool = tool.toLowerCase()
+  const normalizedTitle = title.toLowerCase()
+  return (
+    /(write|edit|patch|create|mkdir|mv|cp|save)/.test(normalizedTool) ||
+    /^(created?|updated?|edited?|wrote|saved)\b/.test(normalizedTitle)
+  )
+}
+
+function defaultToolSubject(tool: string) {
+  const normalized = tool.toLowerCase()
+  if (normalized.includes("glob")) return "files in the project"
+  if (normalized.includes("bash") || normalized.includes("shell") || normalized.includes("command")) return "a command"
+  if (normalized.includes("grep") || normalized.includes("find") || normalized.includes("search")) return "relevant matches"
+  if (normalized.includes("read") || normalized.includes("cat")) return "file contents"
+  if (normalized.includes("patch") || normalized.includes("edit") || normalized.includes("write")) return "project changes"
+  return tool
+}
+
+function summarizeToolLabel(part: ToolPart, title: string) {
+  const normalizedTitle = title.replace(/\s+/g, " ").trim()
+  const shouldUseTitle = normalizedTitle.length > 0 && normalizedTitle.toLowerCase() !== part.tool.toLowerCase()
+  const subject = summarizeInline((shouldUseTitle ? normalizedTitle : defaultToolSubject(part.tool)).trim(), 52)
+  const created = isCreateTool(part.tool, title)
+  if (created && /^created\b/i.test(subject)) return subject
+  if (!created && /^thought about\b/i.test(subject)) return subject
+  return created ? `Created ${subject}` : `Thought about ${subject}`
+}
+
+function toolElapsed(part: ToolPart) {
+  if (!("time" in part.state) || !part.state.time) return null
+  if (!("end" in part.state.time) || !part.state.time.end) return null
+  return `${((part.state.time.end - part.state.time.start) / 1000).toFixed(1)}s`
 }
 
 function formatInput(input: Record<string, unknown>): string {
@@ -372,25 +578,7 @@ function formatInput(input: Record<string, unknown>): string {
 const styles = StyleSheet.create({
   text: {
     fontSize: 15,
-    lineHeight: 22,
-  },
-  tool: {
-    borderWidth: 1,
-    marginVertical: 4,
-    overflow: "hidden",
-  },
-  infoCard: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 10,
-    padding: 10,
-    marginVertical: 4,
-    gap: 6,
-  },
-  infoTitle: {
-    fontSize: 12,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
+    lineHeight: 23,
   },
   infoBody: {
     fontSize: 13,
@@ -409,42 +597,56 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 8,
   },
-  reasoningBody: {
-    fontFamily: "Geist",
-    fontStyle: "italic",
+  expandedPanel: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 8,
+    marginTop: 4,
+  },
+  collapsibleContainer: {
+    marginVertical: 4,
+    overflow: "hidden",
+  },
+  collapsibleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    minHeight: 32,
+    gap: 10,
+  },
+  collapsibleLabel: {
+    flex: 1,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: "500",
+  },
+  collapsibleChevron: {
+    width: 16,
+    textAlign: "right",
+    fontSize: 15,
+    lineHeight: 16,
+    fontWeight: "600",
+  },
+  reasoningExpanded: {
+    paddingTop: 2,
   },
   infoLink: {
     fontSize: 12,
     fontWeight: "600",
   },
-  toolHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+  toolExpanded: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 8,
+    gap: 8,
+    marginTop: 4,
   },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  toolName: {
-    fontSize: 13,
-    fontWeight: "500",
-    flex: 1,
-  },
-  elapsed: {
+  toolMeta: {
     fontSize: 11,
-  },
-  chevron: {
-    fontSize: 10,
-  },
-  toolBody: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    gap: 8,
+    lineHeight: 14,
   },
   toolSection: {
     gap: 4,

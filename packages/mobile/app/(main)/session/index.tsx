@@ -1,11 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from "react"
-import { View, TextInput, Pressable, Text, StyleSheet, Platform } from "react-native"
+import { View, TextInput, Pressable, Text, StyleSheet, Platform, Alert } from "react-native"
 import { KeyboardStickyView } from "react-native-keyboard-controller"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LiquidGlassContainerView, LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
 import * as Haptics from "expo-haptics"
 import { useRouter } from "expo-router"
-import { useMessages } from "../../../src/store/messages"
+import { SendMessageError, useMessages } from "../../../src/store/messages"
 import { useSessions } from "../../../src/store/sessions"
 import { ModelPicker, ModelPickerIconButton } from "../../../src/components/model-picker"
 import { useTheme } from "../../../src/theme"
@@ -34,9 +34,14 @@ export default function SessionIndex() {
     try {
       const id = await sendNew(content)
       router.replace(`/(main)/session/${id}`)
-    } catch {
+    } catch (error) {
       setText(content)
       setSending(false)
+      if (error instanceof SendMessageError) {
+        Alert.alert("Message failed", "Could not start that conversation. Please try again.")
+        return
+      }
+      Alert.alert("Message failed", "Something went wrong while sending.")
     }
   }, [text, sending, sendNew, router])
 

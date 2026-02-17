@@ -59,6 +59,20 @@ const CACHE_INDEX_KEY = `${CACHE_KEY_PREFIX}index`
 
 const persistTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
+export class SendMessageError extends Error {
+  readonly sessionID: string
+  readonly content: string
+  readonly originalError: unknown
+
+  constructor(params: { sessionID: string; content: string; originalError: unknown }) {
+    super("Failed to send message")
+    this.name = "SendMessageError"
+    this.sessionID = params.sessionID
+    this.content = params.content
+    this.originalError = params.originalError
+  }
+}
+
 function sortMessages(a: Message, b: Message) {
   return a.id.localeCompare(b.id)
 }
@@ -564,7 +578,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
             model,
           },
         })
-      } catch {
+      } catch (error) {
         set((state) => {
           const nextMessages = (state.messages[sessionID] ?? []).filter((m) => m.id !== id)
           const nextParts = { ...state.parts }
@@ -581,6 +595,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
             },
           }
         })
+        throw new SendMessageError({ sessionID, content, originalError: error })
       } finally {
         set((state) => ({
           sending: { ...state.sending, [sessionID]: false },
@@ -590,8 +605,20 @@ export const useMessages = createStore<MessageState>((set, get) => {
 
     sendNew: async (content) => {
       const session = await useSessions.getState().create()
-      await get().send(session.id, content)
-      return session.id
+      try {
+        await get().send(session.id, content)
+        return session.id
+      } catch (error) {
+        const hasMessages = (get().messages[session.id]?.length ?? 0) > 0
+        if (!hasMessages) {
+          try {
+            await useSessions.getState().delete(session.id)
+          } catch {
+            // best effort cleanup only
+          }
+        }
+        throw error
+      }
     },
 
     abort: async (sessionID) => {

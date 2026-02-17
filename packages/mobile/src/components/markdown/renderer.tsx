@@ -61,14 +61,20 @@ function stylesForVariant(theme: Theme, variant: "default" | "reasoning"): Recor
   const baseText: TextStyle = isReasoning
     ? { fontFamily: "Geist", fontStyle: "italic" }
     : { fontFamily: "Geist" }
+  const bodySize = isReasoning ? 13 : 15
+  const bodyLine = isReasoning ? 18 : 22
+  const heading1Size = isReasoning ? 16 : 22
+  const heading2Size = isReasoning ? 15 : 19
+  const heading3Size = isReasoning ? 14 : 17
+  const heading4Size = isReasoning ? 13 : 15
 
   return {
-    body: { ...baseText, color: theme.colors.text, fontSize: 15, lineHeight: 22 },
-    paragraph: { ...baseText, marginTop: 0, marginBottom: 8 },
-    heading1: { ...baseText, fontSize: 22, fontWeight: "700" as const, marginBottom: 8, marginTop: 16, color: theme.colors.text },
-    heading2: { ...baseText, fontSize: 19, fontWeight: "700" as const, marginBottom: 6, marginTop: 14, color: theme.colors.text },
-    heading3: { ...baseText, fontSize: 17, fontWeight: "600" as const, marginBottom: 4, marginTop: 12, color: theme.colors.text },
-    heading4: { ...baseText, fontSize: 15, fontWeight: "600" as const, marginBottom: 4, marginTop: 10, color: theme.colors.text },
+    body: { ...baseText, color: theme.colors.text, fontSize: bodySize, lineHeight: bodyLine },
+    paragraph: { ...baseText, marginTop: 0, marginBottom: isReasoning ? 6 : 8 },
+    heading1: { ...baseText, fontSize: heading1Size, fontWeight: "700" as const, marginBottom: 8, marginTop: 16, color: theme.colors.text },
+    heading2: { ...baseText, fontSize: heading2Size, fontWeight: "700" as const, marginBottom: 6, marginTop: 14, color: theme.colors.text },
+    heading3: { ...baseText, fontSize: heading3Size, fontWeight: "600" as const, marginBottom: 4, marginTop: 12, color: theme.colors.text },
+    heading4: { ...baseText, fontSize: heading4Size, fontWeight: "600" as const, marginBottom: 4, marginTop: 10, color: theme.colors.text },
     blockquote: {
       borderLeftWidth: 3,
       borderLeftColor: theme.colors.border,

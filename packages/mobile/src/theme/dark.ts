@@ -14,7 +14,7 @@ const colors = {
   error: "#ef4444",
   success: "#22c55e",
   warning: "#eab308",
-  userBubble: "#3b82f6",
+  userBubble: "#00366A",
   userBubbleText: "#ffffff",
   assistantBubble: "#18181b",
   assistantBubbleText: "#fafafa",

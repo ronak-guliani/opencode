@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, useMemo, useCallback } from "react"
-import { InteractionManager, View, StyleSheet, Pressable, Text, Alert } from "react-native"
+import { useEffect, useRef, useMemo, useCallback } from "react"
+import { AppState, type AppStateStatus, InteractionManager, View, StyleSheet, Pressable, Text, Alert } from "react-native"
 import { useLocalSearchParams, useRouter } from "expo-router"
+import { LinearGradient } from "expo-linear-gradient"
 import * as Haptics from "expo-haptics"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useMessages as useMessageStore } from "../../../src/store/messages"
@@ -17,6 +18,11 @@ import { RequestBanner } from "../../../src/components/chat/request-banner"
 import { DisableFadeProvider } from "../../../src/animation"
 import { markChatFirstPaint, markChatInteractionReady, markChatOpenStart } from "../../../src/perf/chat-metrics"
 
+const REQUEST_POLL_BUSY_MS = 4_000
+const REQUEST_POLL_PENDING_MS = 8_000
+const REQUEST_POLL_IDLE_MS = 45_000
+const TITLE_FADE_WIDTH = 18
+
 export default function SessionScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
   const router = useRouter()
@@ -27,16 +33,35 @@ export default function SessionScreen() {
   const sessions = useSessions((s) => s.sessions)
   const select = useSessions((s) => s.select)
   const refreshRequests = useRequests((s) => s.refresh)
+  const permissions = useRequests((s) => s.permissions)
+  const questions = useRequests((s) => s.questions)
   const directory = useConnection((s) => s.directory)
+  const stream = useConnection((s) => s.stream)
   const switchDirectory = useConnection((s) => s.switchDirectory)
   const requestOpen = useSidebar((s) => s.requestOpen)
   const messages = useSessionMessages(id)
-  const [markdownReady, setMarkdownReady] = useState(false)
+  const sessionStatus = useSessions((s) => (id ? s.statuses[id] : undefined))
   const session = useMemo(() => sessions.find((item) => item.id === id), [sessions, id])
   const title = (session?.title || "").trim() || "Untitled session"
   // Track which sessions have been viewed — disable fade for revisited chats
   const seen = useRef(new Set<string>())
   const wasSeen = id ? seen.current.has(id) : false
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState)
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingRequestCount = useMemo(() => {
+    if (!id) return 0
+    const permissionCount = permissions.filter((item) => item.sessionID === id).length
+    const questionCount = questions.filter((item) => item.sessionID === id).length
+    return permissionCount + questionCount
+  }, [id, permissions, questions])
+  const isBusy = sessionStatus?.type === "busy"
+
+  const clearPollTimer = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current)
+      pollTimerRef.current = null
+    }
+  }, [])
 
   const openSidebar = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
@@ -70,26 +95,69 @@ export default function SessionScreen() {
     if (id) {
       markChatOpenStart(id)
       select(id)
-      setMarkdownReady(false)
       void load(id, { limit: 60, compact: true })
       // Mark as seen after a short delay to let initial content animate
       const timer = setTimeout(() => seen.current.add(id), 1500)
-      let poll: ReturnType<typeof setInterval> | null = null
       const interactionTask = InteractionManager.runAfterInteractions(() => {
-        setMarkdownReady(true)
         markChatInteractionReady(id)
         void refreshRequests()
-        poll = setInterval(() => {
-          void refreshRequests()
-        }, 10_000)
       })
       return () => {
         clearTimeout(timer)
         interactionTask.cancel()
-        if (poll) clearInterval(poll)
       }
     }
   }, [id, load, select, refreshRequests])
+
+  useEffect(() => {
+    if (!id) return
+
+    let cancelled = false
+
+    const pollOnceAndSchedule = async () => {
+      if (cancelled || appStateRef.current !== "active") return
+      try {
+        await refreshRequests()
+      } catch {
+        // ignore
+      }
+      if (cancelled || appStateRef.current !== "active") return
+
+      const interval = isBusy
+        ? REQUEST_POLL_BUSY_MS
+        : pendingRequestCount > 0
+          ? REQUEST_POLL_PENDING_MS
+          : REQUEST_POLL_IDLE_MS
+
+      pollTimerRef.current = setTimeout(() => {
+        void pollOnceAndSchedule()
+      }, interval)
+    }
+
+    clearPollTimer()
+    void pollOnceAndSchedule()
+
+    const appStateSubscription = AppState.addEventListener("change", (nextState) => {
+      appStateRef.current = nextState
+      if (nextState === "active") {
+        clearPollTimer()
+        void pollOnceAndSchedule()
+      } else {
+        clearPollTimer()
+      }
+    })
+
+    return () => {
+      cancelled = true
+      appStateSubscription.remove()
+      clearPollTimer()
+    }
+  }, [id, clearPollTimer, isBusy, pendingRequestCount, refreshRequests])
+
+  useEffect(() => {
+    if (!id || stream !== "connected") return
+    void refreshRequests()
+  }, [id, stream, refreshRequests])
 
   useEffect(() => {
     if (!id || messages.length === 0) return
@@ -109,7 +177,7 @@ export default function SessionScreen() {
             style={[
               styles.header,
               {
-                paddingTop: insets.top + 2,
+                paddingTop: insets.top + 8,
                 backgroundColor: theme.colors.background,
                 borderBottomColor: theme.colors.border,
               },
@@ -129,9 +197,18 @@ export default function SessionScreen() {
               </View>
 
               <View style={styles.titleSlot} pointerEvents="none">
-                <Text style={[styles.title, { color: theme.colors.text }]} numberOfLines={1}>
-                  {title}
-                </Text>
+                <View style={styles.titleWrap}>
+                  <Text style={[styles.title, { color: theme.colors.text }]} numberOfLines={1} ellipsizeMode="clip">
+                    {title}
+                  </Text>
+                  <LinearGradient
+                    colors={["transparent", theme.colors.background]}
+                    start={{ x: 0, y: 0.5 }}
+                    end={{ x: 1, y: 0.5 }}
+                    style={styles.titleFade}
+                    pointerEvents="none"
+                  />
+                </View>
               </View>
 
               <View style={[styles.sideRail, styles.sideRailRight]}>
@@ -157,7 +234,7 @@ export default function SessionScreen() {
             </View>
           </View>
 
-          <MessagesList sessionId={id} messages={messages} enableMarkdown={markdownReady} topPadding={12} />
+          <MessagesList sessionId={id} messages={messages} topPadding={12} />
           <RequestBanner sessionId={id} />
           <Composer sessionId={id} />
         </View>
@@ -220,7 +297,7 @@ const styles = StyleSheet.create({
   },
   sideRailRight: {
     justifyContent: "flex-end",
-    gap: 12,
+    gap: 17,
   },
   iconButton: {
     width: 32,
@@ -236,21 +313,38 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 8,
+    paddingHorizontal: 12,
+  },
+  titleWrap: {
+    width: "100%",
+    maxWidth: 260,
+    overflow: "hidden",
+    alignSelf: "center",
+    position: "relative",
   },
   title: {
     fontSize: 14,
     lineHeight: 18,
-    fontWeight: "600",
+    fontWeight: "500",
     textAlign: "center",
+    paddingRight: TITLE_FADE_WIDTH,
+  },
+  titleFade: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: TITLE_FADE_WIDTH,
   },
   menuIcon: {
     width: 16,
-    height: 12,
-    justifyContent: "space-between",
+    height: 16,
+    justifyContent: "center",
+    alignItems: "flex-start",
+    gap: 4,
   },
   menuLine: {
-    height: 1.7,
+    height: 1.4,
     borderRadius: 2,
     width: 16,
   },
@@ -261,6 +355,8 @@ const styles = StyleSheet.create({
   composeIcon: {
     width: 16,
     height: 16,
+    alignItems: "center",
+    justifyContent: "center",
   },
   composeBox: {
     position: "absolute",
@@ -268,7 +364,7 @@ const styles = StyleSheet.create({
     bottom: 1.2,
     width: 10.8,
     height: 10.8,
-    borderWidth: 1.4,
+    borderWidth: 1.2,
     borderRadius: 2.4,
   },
   composePencilShaft: {
@@ -276,7 +372,7 @@ const styles = StyleSheet.create({
     right: 0.6,
     top: 1.2,
     width: 9,
-    height: 1.7,
+    height: 1.4,
     borderRadius: 1,
     transform: [{ rotate: "-38deg" }],
   },
@@ -286,22 +382,25 @@ const styles = StyleSheet.create({
     top: 4.9,
     width: 0,
     height: 0,
-    borderTopWidth: 1.8,
-    borderBottomWidth: 1.8,
+    borderTopWidth: 1.5,
+    borderBottomWidth: 1.5,
     borderRightWidth: 0,
-    borderLeftWidth: 2.8,
+    borderLeftWidth: 2.4,
     borderTopColor: "transparent",
     borderBottomColor: "transparent",
     transform: [{ rotate: "-38deg" }],
   },
   ellipsisIcon: {
+    width: 16,
+    height: 16,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 2.5,
   },
   ellipsisDot: {
-    width: 3.3,
-    height: 3.3,
+    width: 3,
+    height: 3,
     borderRadius: 2,
   },
 })

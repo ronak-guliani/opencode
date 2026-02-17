@@ -47,10 +47,10 @@ function parse<T>(raw: string | null): T | null {
   }
 }
 
-function decode(raw: string | null) {
+function decode(raw: string | null): ModelMap {
   const list = parse<Array<string>>(raw)
   if (!Array.isArray(list)) return {}
-  return Object.fromEntries(list.filter((item) => typeof item === "string").map((item) => [item, true]))
+  return Object.fromEntries(list.filter((item) => typeof item === "string").map((item) => [item, true as const]))
 }
 
 function encode(map: ModelMap) {
@@ -83,9 +83,9 @@ function knownModels(providerData: ProviderListResponse) {
   return models
 }
 
-function keepKnown(map: ModelMap, known: Set<string>) {
+function keepKnown(map: ModelMap, known: Set<string>): ModelMap {
   const keys = Object.keys(map).filter((key) => known.has(key))
-  return Object.fromEntries(keys.map((key) => [key, true]))
+  return Object.fromEntries(keys.map((key) => [key, true as const]))
 }
 
 function hasModel(providerData: ProviderListResponse, providerID: string, modelID: string) {
@@ -202,7 +202,7 @@ export const useSettings = createStore<SettingsState>((set, get) => ({
       return
     }
 
-    const favorites = { ...state.favorites, [key]: true }
+    const favorites: ModelMap = { ...state.favorites, [key]: true }
     if (state.removed[key]) {
       const removed = { ...state.removed }
       delete removed[key]
@@ -221,7 +221,7 @@ export const useSettings = createStore<SettingsState>((set, get) => ({
     const state = get()
     if (state.removed[key]) return
 
-    const removed = { ...state.removed, [key]: true }
+    const removed: ModelMap = { ...state.removed, [key]: true }
     const updates: Partial<SettingsState> = { removed }
 
     if (state.favorites[key]) {

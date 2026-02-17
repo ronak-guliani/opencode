@@ -1,62 +1,75 @@
-import { memo, useCallback } from "react"
-import { View, Text, StyleSheet } from "react-native"
-import type { Message } from "@opencode-ai/sdk/client"
+import { memo, useCallback, useMemo } from "react"
+import { View, Text, StyleSheet, Pressable, Alert } from "react-native"
+import type { AssistantMessage as AssistantMessageData, Message, Part } from "@opencode-ai/sdk/client"
+import * as Haptics from "expo-haptics"
+import * as Clipboard from "expo-clipboard"
 import { useMessageParts } from "../../api/hooks"
 import { useMessages } from "../../store/messages"
 import { useTheme } from "../../theme"
-import { FadeInStaggered } from "../../animation"
 import { PartRenderer } from "./part"
 
 type Props = {
-  message: Message
-  index: number
-  renderMarkdown?: boolean
+  message: AssistantMessageData
+  showFooter?: boolean
 }
 
-export const AssistantMessage = memo(function AssistantMessage({ message, renderMarkdown = true }: Props) {
+export const AssistantMessage = memo(function AssistantMessage({ message, showFooter = false }: Props) {
   const theme = useTheme()
   const parts = useMessageParts(message.id)
   const hydrateMessage = useMessages((s) => s.hydrateMessage)
-  const animateParts = message.role === "assistant" && !message.time.completed
+  const send = useMessages((s) => s.send)
+  const totalTokens = message.tokens.input + message.tokens.output + message.tokens.reasoning
+  const copyText = useMemo(() => buildCopyText(parts), [parts])
+  const canRetry = !!message.time.completed
   const onHydrateMessage = useCallback(
     (messageID: string) => {
       void hydrateMessage(message.sessionID, messageID)
     },
     [hydrateMessage, message.sessionID],
   )
+  const onCopy = useCallback(() => {
+    if (!copyText.trim()) return
+    Haptics.selectionAsync()
+    void Clipboard.setStringAsync(copyText)
+  }, [copyText])
+
+  const onRetry = useCallback(() => {
+    if (!canRetry) return
+    const state = useMessages.getState()
+    const prompt = findRetryPrompt(message.id, state.messages[message.sessionID] ?? [], state.parts)
+    if (!prompt) return
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+    void send(message.sessionID, prompt).catch(() => {
+      Alert.alert("Retry failed", "Could not resend that prompt. Please try again.")
+    })
+  }, [canRetry, message.id, message.sessionID, send])
 
   if (parts.length === 0) return null
 
   return (
     <View style={styles.container}>
       <View style={styles.content}>
-        {parts.map((part) =>
-          animateParts ? (
-            <FadeInStaggered key={part.id}>
-              <PartRenderer
-                part={part}
-                isUser={false}
-                renderMarkdown={renderMarkdown}
-                onHydrateMessage={onHydrateMessage}
-              />
-            </FadeInStaggered>
-          ) : (
-            <PartRenderer
-              key={part.id}
-              part={part}
-              isUser={false}
-              renderMarkdown={renderMarkdown}
-              onHydrateMessage={onHydrateMessage}
-            />
-          ),
-        )}
+        {parts.map((part) => (
+          <PartRenderer key={part.id} part={part} isUser={false} onHydrateMessage={onHydrateMessage} />
+        ))}
       </View>
-      {"tokens" in message && message.tokens && (
-        <Text style={[styles.meta, { color: theme.colors.textTertiary }]}>
-          {message.tokens.input + message.tokens.output > 0 &&
-            `${formatTokens(message.tokens.input + message.tokens.output)} tokens`}
-        </Text>
-      )}
+      {showFooter ? (
+        <View style={styles.footer}>
+          <Text style={[styles.meta, { color: theme.colors.textTertiary }]}>
+            {totalTokens > 0 ? `${formatTokens(totalTokens)} tokens` : "0 tokens"}
+          </Text>
+          <View style={styles.footerActions}>
+            <Pressable onPress={onRetry} disabled={!canRetry}>
+              <Text style={[styles.footerActionText, { color: canRetry ? theme.colors.textTertiary : theme.colors.textTertiary + "80" }]}>
+                Retry
+              </Text>
+            </Pressable>
+            <Pressable onPress={onCopy}>
+              <Text style={[styles.footerActionText, { color: theme.colors.textTertiary }]}>Copy</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
     </View>
   )
 })
@@ -64,6 +77,77 @@ export const AssistantMessage = memo(function AssistantMessage({ message, render
 function formatTokens(n: number): string {
   if (n < 1000) return `${n}`
   return `${(n / 1000).toFixed(1)}k`
+}
+
+function findRetryPrompt(
+  assistantMessageID: string,
+  sessionMessages: Message[],
+  partsByMessage: Record<string, Part[]>,
+) {
+  const assistantIndex = sessionMessages.findIndex((item) => item.id === assistantMessageID)
+  if (assistantIndex <= 0) return ""
+
+  for (let i = assistantIndex - 1; i >= 0; i -= 1) {
+    const candidate = sessionMessages[i]
+    if (candidate.role !== "user") continue
+    const text = (partsByMessage[candidate.id] ?? [])
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n")
+      .trim()
+    if (text) return text
+  }
+
+  return ""
+}
+
+function buildCopyText(parts: Part[]) {
+  const blocks: string[] = []
+
+  for (const part of parts) {
+    if (part.type === "text" && part.text.trim()) {
+      blocks.push(part.text.trim())
+      continue
+    }
+    if (part.type === "reasoning" && part.text.trim()) {
+      blocks.push(part.text.trim())
+      continue
+    }
+    if (part.type === "tool") {
+      const title = "title" in part.state ? part.state.title : part.tool
+      const header = `[${title || part.tool}]`
+      if ("output" in part.state && typeof part.state.output === "string" && part.state.output.trim()) {
+        blocks.push(`${header}\n${part.state.output.trim()}`)
+      } else if ("error" in part.state && typeof part.state.error === "string" && part.state.error.trim()) {
+        blocks.push(`${header}\nError: ${part.state.error.trim()}`)
+      } else {
+        blocks.push(header)
+      }
+      continue
+    }
+    if (part.type === "file") {
+      const name = part.filename || part.source?.path?.split("/").pop() || "Attached file"
+      const fileText = part.source?.text?.value?.trim()
+      blocks.push(fileText ? `[File] ${name}\n${fileText}` : `[File] ${name}`)
+      continue
+    }
+    if (part.type === "patch" && part.files.length > 0) {
+      blocks.push(`[Patch]\n${part.files.join("\n")}`)
+      continue
+    }
+    if (part.type === "subtask") {
+      const lines = [part.description]
+      if (part.prompt?.trim()) lines.push(part.prompt.trim())
+      blocks.push(lines.join("\n\n"))
+      continue
+    }
+    if (part.type === "retry") {
+      const error = part.error?.data?.message || "Unknown error"
+      blocks.push(`[Retry #${part.attempt}] ${error}`)
+    }
+  }
+
+  return blocks.join("\n\n").trim()
 }
 
 const styles = StyleSheet.create({
@@ -76,7 +160,22 @@ const styles = StyleSheet.create({
   },
   meta: {
     fontSize: 11,
-    marginTop: 4,
+  },
+  footer: {
+    width: "100%",
+    marginTop: 6,
     marginLeft: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  footerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  footerActionText: {
+    fontSize: 11,
+    fontWeight: "500",
   },
 })

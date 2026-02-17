@@ -1,10 +1,10 @@
-import { useState, useCallback, useRef } from "react"
-import { View, TextInput, Pressable, Text, StyleSheet, Platform } from "react-native"
+import { useState, useCallback } from "react"
+import { View, TextInput, Pressable, Text, StyleSheet, Platform, Alert } from "react-native"
 import { KeyboardStickyView } from "react-native-keyboard-controller"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LiquidGlassContainerView, LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
 import * as Haptics from "expo-haptics"
-import { useMessages } from "../../store/messages"
+import { SendMessageError, useMessages } from "../../store/messages"
 import { useIsSending, useSessionStatus } from "../../api/hooks"
 import { ModelPicker, ModelPickerIconButton } from "../model-picker"
 import { useChat } from "./provider"
@@ -22,22 +22,27 @@ export function Composer({ sessionId }: Props) {
   const abort = useMessages((s) => s.abort)
   const sending = useIsSending(sessionId)
   const status = useSessionStatus(sessionId)
-  const { setComposerH, listRef, isAtEnd } = useChat()
-  const prevHeight = useRef(0)
+  const { setComposerH } = useChat()
   const [pickerVisible, setPickerVisible] = useState(false)
 
   const busy = status?.type === "busy"
 
   const handleSend = useCallback(async () => {
     const content = text.trim()
-    if (!content) return
+    if (!content || sending) return
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
     setText("")
-    await send(sessionId, content)
-    requestAnimationFrame(() => {
-      listRef.current?.scrollToEnd({ animated: true })
-    })
-  }, [text, sessionId, send, listRef])
+    try {
+      await send(sessionId, content)
+    } catch (error) {
+      setText(content)
+      if (error instanceof SendMessageError) {
+        Alert.alert("Message failed", "Could not send your message. Please try again.")
+        return
+      }
+      Alert.alert("Message failed", "Something went wrong while sending.")
+    }
+  }, [text, sending, sessionId, send])
 
   const handleAbort = useCallback(() => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
@@ -45,16 +50,8 @@ export function Composer({ sessionId }: Props) {
   }, [sessionId, abort])
 
   const handleLayout = useCallback((e: { nativeEvent: { layout: { height: number } } }) => {
-    const h = e.nativeEvent.layout.height
-    const delta = h - prevHeight.current
-    setComposerH(h)
-    if (delta > 0 && prevHeight.current > 0 && isAtEnd.value) {
-      requestAnimationFrame(() => {
-        listRef.current?.scrollToEnd({ animated: true })
-      })
-    }
-    prevHeight.current = h
-  }, [setComposerH, isAtEnd, listRef])
+    setComposerH(e.nativeEvent.layout.height)
+  }, [setComposerH])
 
   const Sticky = KeyboardStickyView as React.ComponentType<{
     offset?: { closed?: number; opened?: number }

@@ -1,7 +1,9 @@
 import type { Event } from "@opencode-ai/sdk/client"
+import { Platform } from "react-native"
 import { url, headers } from "./client"
 import { useSessions } from "../store/sessions"
 import { useMessages } from "../store/messages"
+import { useRequests } from "../store/requests"
 import { useConnection } from "../store/connection"
 
 // Opt-in debug flag for SSE diagnostics on device:
@@ -20,7 +22,7 @@ type MessageEvent =
   | Extract<Event, { type: "message.part.updated" }>
   | Extract<Event, { type: "message.part.removed" }>
 
-const EVENT_FLUSH_MS = 24
+const EVENT_FLUSH_MS = Platform.OS === "ios" ? 40 : 24
 
 let subscriber: Subscriber | null = null
 
@@ -46,6 +48,10 @@ function eventKey(event: Event): string | null {
       return `part:${event.properties.part.id}`
     case "message.updated":
       return `message:${event.properties.info.id}`
+    case "permission.updated":
+      return `permission:${event.properties.id}`
+    case "permission.replied":
+      return `permission.replied:${event.properties.permissionID}`
     default:
       return null
   }
@@ -56,6 +62,7 @@ function applyBatch(events: Event[]) {
 
   const sessions = useSessions.getState()
   const messages = useMessages.getState()
+  const requests = useRequests.getState()
   const messageEvents: MessageEvent[] = []
 
   for (const event of events) {
@@ -81,6 +88,12 @@ function applyBatch(events: Event[]) {
           console.log("[sse] part.updated", event.properties.part.id, event.properties.part.type)
         }
         messageEvents.push(event)
+        break
+      case "permission.updated":
+        requests._upsertPermission(event.properties)
+        break
+      case "permission.replied":
+        requests._removePermission(event.properties.permissionID)
         break
     }
   }

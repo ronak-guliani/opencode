@@ -26,7 +26,13 @@ export const CodeBlock = memo(function CodeBlock({ code, language }: Props) {
           <Text style={[styles.copy, { color: theme.colors.textTertiary }]}>Copy</Text>
         </Pressable>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.scroll}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.scroll}
+        directionalLockEnabled
+        nestedScrollEnabled
+      >
         <Text style={[styles.code, { color: theme.colors.codeText }]} selectable>
           {highlighted.map((token, index) => {
             if (token.type === "plain") return token.value
