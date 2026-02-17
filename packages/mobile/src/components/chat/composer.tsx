@@ -25,6 +25,7 @@ export function Composer({ sessionId }: Props) {
   const { setComposerH, listRef, isAtEnd } = useChat()
   const prevHeight = useRef(0)
   const [pickerVisible, setPickerVisible] = useState(false)
+  const [pickerAnchor, setPickerAnchor] = useState<{ x: number; y: number } | null>(null)
 
   const busy = status?.type === "busy"
 
@@ -100,7 +101,14 @@ export function Composer({ sessionId }: Props) {
     children?: React.ReactNode
   }>
 
-  const modelButton = <ModelPickerIconButton onPress={() => setPickerVisible(true)} />
+  const modelButton = (
+    <ModelPickerIconButton
+      onPress={(point) => {
+        setPickerAnchor(point)
+        setPickerVisible(true)
+      }}
+    />
+  )
 
   return (
     <Sticky offset={{ closed: 0, opened: 0 }}>
@@ -171,7 +179,7 @@ export function Composer({ sessionId }: Props) {
           </View>
         )}
       </View>
-      <ModelPicker visible={pickerVisible} onClose={() => setPickerVisible(false)} />
+      <ModelPicker visible={pickerVisible} onClose={() => setPickerVisible(false)} anchor={pickerAnchor} />
     </Sticky>
   )
 }
