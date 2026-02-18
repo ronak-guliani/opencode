@@ -125,22 +125,22 @@ export function Composer({ sessionId }: Props) {
             <Glass interactive style={styles.glassCircle}>
               {modelButton}
             </Glass>
-            <Glass interactive style={[styles.glassInput, { borderRadius: 24 }]}>
-              <TextInput
-                style={[styles.input, { color: theme.colors.text }]}
-                value={text}
-                onChangeText={setText}
-                placeholder="Send a message..."
-                placeholderTextColor={theme.colors.textTertiary}
-                multiline
-                maxLength={100000}
-                editable={!sending}
-                returnKeyType="default"
-                blurOnSubmit={false}
-              />
-            </Glass>
-            <Glass interactive style={styles.glassCircle}>
-              {sendButton}
+            <Glass interactive style={[styles.glassInput, { borderRadius: 21 }]}>
+              <View style={styles.inputShell}>
+                <TextInput
+                  style={[styles.input, { color: theme.colors.text }]}
+                  value={text}
+                  onChangeText={setText}
+                  placeholder="Send a message..."
+                  placeholderTextColor={theme.colors.textTertiary}
+                  multiline
+                  maxLength={100000}
+                  editable={!sending}
+                  returnKeyType="default"
+                  blurOnSubmit={false}
+                />
+                {sendButton}
+              </View>
             </Glass>
           </GlassContainer>
         ) : (
@@ -157,21 +157,21 @@ export function Composer({ sessionId }: Props) {
                 },
               ]}
             >
-              <TextInput
-                style={[styles.input, { color: theme.colors.text }]}
-                value={text}
-                onChangeText={setText}
-                placeholder="Send a message..."
-                placeholderTextColor={theme.colors.textTertiary}
-                multiline
-                maxLength={100000}
-                editable={!sending}
-                returnKeyType="default"
-                blurOnSubmit={false}
-              />
-            </View>
-            <View style={[styles.fallbackCircle, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-              {sendButton}
+              <View style={styles.inputShell}>
+                <TextInput
+                  style={[styles.input, { color: theme.colors.text }]}
+                  value={text}
+                  onChangeText={setText}
+                  placeholder="Send a message..."
+                  placeholderTextColor={theme.colors.textTertiary}
+                  multiline
+                  maxLength={100000}
+                  editable={!sending}
+                  returnKeyType="default"
+                  blurOnSubmit={false}
+                />
+                {sendButton}
+              </View>
             </View>
           </View>
         )}
@@ -184,67 +184,77 @@ export function Composer({ sessionId }: Props) {
 const styles = StyleSheet.create({
   container: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingTop: 8,
+    paddingHorizontal: 10,
+    paddingTop: 6,
   },
   glassRow: {
     flexDirection: "row",
-    alignItems: "flex-end",
+    alignItems: "center",
     gap: 8,
   },
   glassCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     overflow: "hidden",
     justifyContent: "center",
     alignItems: "center",
   },
   glassInput: {
     flex: 1,
-    minHeight: 48,
+    minHeight: 42,
     justifyContent: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 6,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    overflow: "hidden",
   },
   fallbackRow: {
     flexDirection: "row",
-    alignItems: "flex-end",
+    alignItems: "center",
     gap: 8,
   },
   fallbackCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     borderWidth: StyleSheet.hairlineWidth,
     justifyContent: "center",
     alignItems: "center",
   },
   inputRow: {
     flex: 1,
-    minHeight: 48,
+    minHeight: 42,
     borderWidth: 1,
-    borderRadius: 24,
+    borderRadius: 21,
     justifyContent: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 6,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+  },
+  inputShell: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingLeft: 14,
+    paddingRight: 2,
   },
   input: {
+    flex: 1,
     fontSize: 15,
-    lineHeight: 22,
-    minHeight: 30,
-    maxHeight: 110,
-    paddingVertical: Platform.OS === "ios" ? 4 : 2,
+    lineHeight: 23,
+    minHeight: 26,
+    maxHeight: 96,
+    paddingVertical: Platform.OS === "ios" ? 5 : 3,
+    paddingRight: 8,
   },
   sendButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     justifyContent: "center",
     alignItems: "center",
   },
   sendIcon: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "700",
   },
 })

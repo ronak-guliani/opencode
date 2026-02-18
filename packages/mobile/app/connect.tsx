@@ -10,24 +10,16 @@ import {
   Platform,
   ScrollView,
 } from "react-native"
-import AsyncStorage from "@react-native-async-storage/async-storage"
 import { useRouter } from "expo-router"
 import { useConnection } from "../src/store/connection"
 import { bootstrap } from "../src/api/bootstrap"
 import { useTheme } from "../src/theme"
 
-const RECENT_SERVERS_KEY = "recent_servers_v1"
-const MAX_RECENT_SERVERS = 5
-
-type RecentServer = {
-  url: string
-  username?: string
-}
-
 export default function ConnectScreen() {
   const theme = useTheme()
   const router = useRouter()
   const connect = useConnection((s) => s.connect)
+  const servers = useConnection((s) => s.servers)
   const status = useConnection((s) => s.status)
   const error = useConnection((s) => s.error)
 
@@ -35,47 +27,20 @@ export default function ConnectScreen() {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [showAuth, setShowAuth] = useState(false)
-  const [recentServers, setRecentServers] = useState<RecentServer[]>([])
 
   const [bootstrapError, setBootstrapError] = useState<string | null>(null)
 
-  const loadRecentServers = useCallback(async () => {
-    try {
-      const raw = await AsyncStorage.getItem(RECENT_SERVERS_KEY)
-      if (!raw) return
-      const parsed = JSON.parse(raw) as RecentServer[]
-      if (!Array.isArray(parsed)) return
-      setRecentServers(parsed.filter((item) => item?.url))
-      if (parsed[0]?.url) {
-        setUrl((current) => current || parsed[0].url)
-      }
-    } catch {
-      // ignore
-    }
-  }, [])
-
-  const saveRecentServer = useCallback(async (next: RecentServer) => {
-    try {
-      const prevRaw = await AsyncStorage.getItem(RECENT_SERVERS_KEY)
-      const prev = prevRaw ? ((JSON.parse(prevRaw) as RecentServer[]) ?? []) : []
-      const deduped = [next, ...prev.filter((item) => item.url !== next.url)]
-      const trimmed = deduped.slice(0, MAX_RECENT_SERVERS)
-      setRecentServers(trimmed)
-      await AsyncStorage.setItem(RECENT_SERVERS_KEY, JSON.stringify(trimmed))
-    } catch {
-      // ignore
-    }
-  }, [])
-
   useEffect(() => {
-    loadRecentServers()
-  }, [loadRecentServers])
+    const first = servers[0]
+    if (!first) return
+    setUrl((current) => current || first.url)
+  }, [servers])
 
   const handleConnect = useCallback(async () => {
     if (!url.trim()) return
     setBootstrapError(null)
     try {
-      const auth = showAuth && username ? { username, password } : undefined
+      const auth = showAuth && username.trim() && password.length > 0 ? { username: username.trim(), password } : undefined
       const normalized = url.trim()
       await connect(normalized, auth)
       const result = await bootstrap()
@@ -83,12 +48,11 @@ export default function ConnectScreen() {
         setBootstrapError(result.error ?? "Bootstrap failed")
         return
       }
-      await saveRecentServer({ url: normalized, username: auth?.username })
       router.replace("/(main)/session")
     } catch {
       // connection error is already set in the store
     }
-  }, [url, username, password, showAuth, connect, router, saveRecentServer])
+  }, [url, username, password, showAuth, connect, router])
 
   const connecting = status === "connecting"
 
@@ -173,11 +137,11 @@ export default function ConnectScreen() {
             </View>
           )}
 
-          {recentServers.length > 0 && (
+          {servers.length > 0 && (
             <View style={styles.recentSection}>
-              <Text style={[styles.label, { color: theme.colors.textSecondary }]}>Recent Servers</Text>
+              <Text style={[styles.label, { color: theme.colors.textSecondary }]}>Saved Servers</Text>
               <View style={[styles.recentList, { borderColor: theme.colors.border }]}>
-                {recentServers.map((server, index) => (
+                {servers.map((server, index) => (
                   <View key={server.url}>
                     {index > 0 && <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />}
                     <Pressable
@@ -185,6 +149,7 @@ export default function ConnectScreen() {
                       onPress={() => {
                         setUrl(server.url)
                         setUsername(server.username ?? "")
+                        setPassword("")
                         setShowAuth(!!server.username)
                       }}
                     >

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useMemo, useCallback } from "react"
 import { AppState, type AppStateStatus, InteractionManager, View, StyleSheet, Pressable, Text, Alert } from "react-native"
 import { useLocalSearchParams, useRouter } from "expo-router"
+import Feather from "@expo/vector-icons/Feather"
 import { LinearGradient } from "expo-linear-gradient"
 import * as Haptics from "expo-haptics"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
@@ -18,10 +19,11 @@ import { RequestBanner } from "../../../src/components/chat/request-banner"
 import { DisableFadeProvider } from "../../../src/animation"
 import { markChatFirstPaint, markChatInteractionReady, markChatOpenStart } from "../../../src/perf/chat-metrics"
 
+const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
 const REQUEST_POLL_BUSY_MS = 4_000
 const REQUEST_POLL_PENDING_MS = 8_000
 const REQUEST_POLL_IDLE_MS = 45_000
-const TITLE_FADE_WIDTH = 18
+const TITLE_FADE_WIDTH = 22
 
 export default function SessionScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
@@ -43,6 +45,7 @@ export default function SessionScreen() {
   const sessionStatus = useSessions((s) => (id ? s.statuses[id] : undefined))
   const session = useMemo(() => sessions.find((item) => item.id === id), [sessions, id])
   const title = (session?.title || "").trim() || "Untitled session"
+  const titleFadeStart = useMemo(() => withAlpha(theme.colors.background, "00"), [theme.colors.background])
   // Track which sessions have been viewed — disable fade for revisited chats
   const seen = useRef(new Set<string>())
   const wasSeen = id ? seen.current.has(id) : false
@@ -177,7 +180,7 @@ export default function SessionScreen() {
             style={[
               styles.header,
               {
-                paddingTop: insets.top + 8,
+                paddingTop: insets.top + 12,
                 backgroundColor: theme.colors.background,
                 borderBottomColor: theme.colors.border,
               },
@@ -192,17 +195,17 @@ export default function SessionScreen() {
                   accessibilityLabel="Open sidebar"
                   hitSlop={8}
                 >
-                  <MenuIcon color={theme.colors.textSecondary} />
+                  <FeatherIcon name="menu" size={18} color={theme.colors.text} />
                 </Pressable>
               </View>
 
               <View style={styles.titleSlot} pointerEvents="none">
                 <View style={styles.titleWrap}>
-                  <Text style={[styles.title, { color: theme.colors.text }]} numberOfLines={1} ellipsizeMode="clip">
+                  <Text style={[styles.title, { color: theme.colors.text }]} numberOfLines={1} ellipsizeMode="tail">
                     {title}
                   </Text>
                   <LinearGradient
-                    colors={["transparent", theme.colors.background]}
+                    colors={[titleFadeStart, theme.colors.background]}
                     start={{ x: 0, y: 0.5 }}
                     end={{ x: 1, y: 0.5 }}
                     style={styles.titleFade}
@@ -219,7 +222,7 @@ export default function SessionScreen() {
                   accessibilityLabel="New session"
                   hitSlop={8}
                 >
-                  <ComposeIcon color={theme.colors.textSecondary} />
+                  <FeatherIcon name="edit-3" size={17} color={theme.colors.text} />
                 </Pressable>
                 <Pressable
                   style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
@@ -228,13 +231,13 @@ export default function SessionScreen() {
                   accessibilityLabel="Session options"
                   hitSlop={8}
                 >
-                  <EllipsisIcon color={theme.colors.textSecondary} />
+                  <FeatherIcon name="more-horizontal" size={18} color={theme.colors.text} />
                 </Pressable>
               </View>
             </View>
           </View>
 
-          <MessagesList sessionId={id} messages={messages} topPadding={12} />
+          <MessagesList sessionId={id} messages={messages} topPadding={16} />
           <RequestBanner sessionId={id} />
           <Composer sessionId={id} />
         </View>
@@ -243,33 +246,9 @@ export default function SessionScreen() {
   )
 }
 
-function MenuIcon({ color }: { color: string }) {
-  return (
-    <View style={styles.menuIcon}>
-      <View style={[styles.menuLine, { backgroundColor: color }]} />
-      <View style={[styles.menuLine, styles.menuLineShort, { backgroundColor: color }]} />
-    </View>
-  )
-}
-
-function ComposeIcon({ color }: { color: string }) {
-  return (
-    <View style={styles.composeIcon}>
-      <View style={[styles.composeBox, { borderColor: color }]} />
-      <View style={[styles.composePencilShaft, { backgroundColor: color }]} />
-      <View style={[styles.composePencilTip, { borderLeftColor: color }]} />
-    </View>
-  )
-}
-
-function EllipsisIcon({ color }: { color: string }) {
-  return (
-    <View style={styles.ellipsisIcon}>
-      <View style={[styles.ellipsisDot, { backgroundColor: color }]} />
-      <View style={[styles.ellipsisDot, { backgroundColor: color }]} />
-      <View style={[styles.ellipsisDot, { backgroundColor: color }]} />
-    </View>
-  )
+function withAlpha(color: string, alpha: string) {
+  if (!color.startsWith("#") || color.length !== 7) return color
+  return `${color}${alpha}`
 }
 
 const styles = StyleSheet.create({
@@ -278,17 +257,17 @@ const styles = StyleSheet.create({
   },
   header: {
     borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingBottom: 8,
+    paddingHorizontal: 10,
+    paddingBottom: 10,
     position: "relative",
   },
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
-    minHeight: 34,
+    minHeight: 38,
   },
   sideRail: {
-    width: 84,
+    width: 74,
     flexDirection: "row",
     alignItems: "center",
   },
@@ -297,12 +276,12 @@ const styles = StyleSheet.create({
   },
   sideRailRight: {
     justifyContent: "flex-end",
-    gap: 17,
+    gap: 14,
   },
   iconButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -313,21 +292,22 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
   },
   titleWrap: {
     width: "100%",
-    maxWidth: 260,
+    maxWidth: 280,
     overflow: "hidden",
     alignSelf: "center",
     position: "relative",
   },
   title: {
     fontSize: 14,
-    lineHeight: 18,
+    lineHeight: 19,
     fontWeight: "500",
     textAlign: "center",
     paddingRight: TITLE_FADE_WIDTH,
+    paddingLeft: 2,
   },
   titleFade: {
     position: "absolute",
@@ -335,72 +315,5 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     width: TITLE_FADE_WIDTH,
-  },
-  menuIcon: {
-    width: 16,
-    height: 16,
-    justifyContent: "center",
-    alignItems: "flex-start",
-    gap: 4,
-  },
-  menuLine: {
-    height: 1.4,
-    borderRadius: 2,
-    width: 16,
-  },
-  menuLineShort: {
-    width: 11,
-    alignSelf: "flex-end",
-  },
-  composeIcon: {
-    width: 16,
-    height: 16,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  composeBox: {
-    position: "absolute",
-    left: 1.2,
-    bottom: 1.2,
-    width: 10.8,
-    height: 10.8,
-    borderWidth: 1.2,
-    borderRadius: 2.4,
-  },
-  composePencilShaft: {
-    position: "absolute",
-    right: 0.6,
-    top: 1.2,
-    width: 9,
-    height: 1.4,
-    borderRadius: 1,
-    transform: [{ rotate: "-38deg" }],
-  },
-  composePencilTip: {
-    position: "absolute",
-    right: 6.8,
-    top: 4.9,
-    width: 0,
-    height: 0,
-    borderTopWidth: 1.5,
-    borderBottomWidth: 1.5,
-    borderRightWidth: 0,
-    borderLeftWidth: 2.4,
-    borderTopColor: "transparent",
-    borderBottomColor: "transparent",
-    transform: [{ rotate: "-38deg" }],
-  },
-  ellipsisIcon: {
-    width: 16,
-    height: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 2.5,
-  },
-  ellipsisDot: {
-    width: 3,
-    height: 3,
-    borderRadius: 2,
   },
 })

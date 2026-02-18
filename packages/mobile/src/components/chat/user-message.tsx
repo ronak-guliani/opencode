@@ -1,6 +1,6 @@
 import { memo } from "react"
 import { View, Text, StyleSheet } from "react-native"
-import type { Message } from "@opencode-ai/sdk/client"
+import type { Message, Part } from "@opencode-ai/sdk/client"
 import { useMessageParts } from "../../api/hooks"
 import { useTheme } from "../../theme"
 import { PartRenderer } from "./part"
@@ -17,6 +17,7 @@ export const UserMessage = memo(function UserMessage({ message }: Props) {
     .filter((p) => p.type === "text")
     .map((p) => (p as { text: string }).text)
     .join("")
+  const summary = parts.map(partSummary).filter(Boolean).join("\n")
 
   return (
     <View style={styles.container}>
@@ -31,6 +32,8 @@ export const UserMessage = memo(function UserMessage({ message }: Props) {
       >
         {text ? (
           <Text style={[styles.text, { color: theme.colors.userBubbleText }]}>{text}</Text>
+        ) : summary ? (
+          <Text style={[styles.text, { color: theme.colors.userBubbleText }]}>{summary}</Text>
         ) : (
           parts.map((part) => <PartRenderer key={part.id} part={part} isUser />)
         )}
@@ -45,12 +48,30 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   bubble: {
-    maxWidth: "78%",
-    paddingHorizontal: 20,
-    paddingVertical: 14,
+    maxWidth: "75%",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
   },
   text: {
     fontSize: 15,
-    lineHeight: 23,
+    lineHeight: 24,
   },
 })
+
+function partSummary(part: Part) {
+  if (part.type === "text") return part.text.trim()
+  if (part.type === "reasoning") return part.text.trim()
+  if (part.type === "compaction") return part.auto ? "Automatic compaction applied." : "Manual compaction applied."
+  if (part.type === "subtask") return part.description.trim()
+  if (part.type === "agent") return part.name.trim()
+  if (part.type === "retry") return part.error?.data?.message?.trim() || "Retry requested."
+  if (part.type === "snapshot") return "Snapshot created."
+  if (part.type === "step-start" || part.type === "step-finish") return ""
+  if (part.type === "patch") return part.files.length > 0 ? `Updated ${part.files.length} file(s).` : "Patch applied."
+  if (part.type === "file") return part.filename || part.source?.path || "Attached file."
+  if (part.type === "tool") {
+    if ("title" in part.state && part.state.title) return part.state.title
+    return part.tool
+  }
+  return ""
+}

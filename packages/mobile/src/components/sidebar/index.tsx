@@ -1,4 +1,4 @@
-import { useCallback, useMemo, memo, useState } from "react"
+import { useCallback, useMemo, memo, useRef, useState } from "react"
 import {
   View,
   Text,
@@ -408,10 +408,46 @@ const SessionRow = memo(function SessionRow({
 }) {
   const theme = useTheme()
   const selected = useSessions((s) => s.current === session.id)
+  const touchRef = useRef<{ x: number; y: number; t: number } | null>(null)
+  const movedRef = useRef(false)
 
   const handleMenuOpen = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
   }, [])
+
+  const handlePressIn = useCallback((e: { nativeEvent: { pageX: number; pageY: number } }) => {
+    touchRef.current = {
+      x: e.nativeEvent.pageX,
+      y: e.nativeEvent.pageY,
+      t: Date.now(),
+    }
+    movedRef.current = false
+  }, [])
+
+  const handlePressMove = useCallback((e: { nativeEvent: { pageX: number; pageY: number } }) => {
+    const touch = touchRef.current
+    if (!touch) return
+    if (movedRef.current) return
+    const dx = Math.abs(e.nativeEvent.pageX - touch.x)
+    const dy = Math.abs(e.nativeEvent.pageY - touch.y)
+    if (dx > 8 || dy > 8) movedRef.current = true
+  }, [])
+
+  const handlePressOut = useCallback((e: { nativeEvent: { pageX: number; pageY: number } }) => {
+    const touch = touchRef.current
+    if (!touch) return
+    const dx = Math.abs(e.nativeEvent.pageX - touch.x)
+    const dy = Math.abs(e.nativeEvent.pageY - touch.y)
+    if (dx > 8 || dy > 8) movedRef.current = true
+  }, [])
+
+  const handleSelect = useCallback(() => {
+    const touch = touchRef.current
+    if (!touch) return
+    if (movedRef.current) return
+    if (Date.now() - touch.t > 500) return
+    void onSelect(session)
+  }, [onSelect, session])
 
   const rowBody = (
     <Pressable
@@ -422,7 +458,11 @@ const SessionRow = memo(function SessionRow({
           borderRadius: theme.radii.md,
         },
       ]}
-      onPress={() => void onSelect(session)}
+      onPressIn={handlePressIn}
+      onTouchMove={handlePressMove}
+      onPressOut={handlePressOut}
+      onPress={handleSelect}
+      delayLongPress={280}
     >
       <View style={styles.sessionMain}>
         <Text style={[styles.sessionTitle, { color: theme.colors.text }]} numberOfLines={1}>

@@ -813,14 +813,14 @@ const styles = StyleSheet.create({
     marginTop: -1,
   },
   iconButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: "center",
     alignItems: "center",
   },
   iconGlyph: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: "500",
     marginTop: -1,
   },

@@ -17,6 +17,8 @@ import { useTheme, type Theme } from "../../src/theme"
 import { useConnection } from "../../src/store/connection"
 import { useSettings } from "../../src/store/settings"
 import { client, headers as clientHeaders, url as clientUrl } from "../../src/api/client"
+import { bootstrap } from "../../src/api/bootstrap"
+import { normalizeServerUrl, serverDisplayName } from "../../src/util/server"
 
 type Method = { type: string; label: string }
 type Authorization = { url: string; method: "auto" | "code"; instructions: string }
@@ -79,8 +81,13 @@ export default function SettingsScreen() {
   const router = useRouter()
 
   const serverURL = useConnection((s) => s.url)
+  const servers = useConnection((s) => s.servers)
+  const activeServerUrl = useConnection((s) => s.activeServerUrl)
   const status = useConnection((s) => s.status)
   const serverVersion = useConnection((s) => s.serverVersion)
+  const connect = useConnection((s) => s.connect)
+  const saveServer = useConnection((s) => s.saveServer)
+  const removeServer = useConnection((s) => s.removeServer)
   const disconnect = useConnection((s) => s.disconnect)
 
   const providerData = useSettings((s) => s.providerData)
@@ -94,10 +101,18 @@ export default function SettingsScreen() {
 
   const [flow, setFlow] = useState<Flow | null>(null)
   const [pending, setPending] = useState(false)
-  const [busy, setBusy] = useState<string | null>(null)
+  const [providerBusy, setProviderBusy] = useState<string | null>(null)
+  const [serverBusy, setServerBusy] = useState<string | null>(null)
+  const [serverBusyAction, setServerBusyAction] = useState<"connect" | "remove" | null>(null)
+  const [serverError, setServerError] = useState<string | null>(null)
   const [providerError, setProviderError] = useState<string | null>(null)
   const [apiKey, setApiKey] = useState("")
   const [oauthCode, setOauthCode] = useState("")
+  const [addServerURL, setAddServerURL] = useState("")
+  const [addAuthEnabled, setAddAuthEnabled] = useState(false)
+  const [addUsername, setAddUsername] = useState("")
+  const [addPassword, setAddPassword] = useState("")
+  const [addingServer, setAddingServer] = useState(false)
 
   const connectedSet = useMemo(() => new Set(connected), [connected])
 
@@ -190,7 +205,8 @@ export default function SettingsScreen() {
         return
       }
 
-      if (!authorization.data) {
+      const auth = "data" in authorization ? (authorization.data as Authorization | undefined) : undefined
+      if (!auth) {
         setPending(false)
         setFlow({
           ...state,
@@ -199,8 +215,6 @@ export default function SettingsScreen() {
         })
         return
       }
-
-      const auth = authorization.data as Authorization
       openAuthorization(auth)
 
       if (auth.method === "code") {
@@ -266,7 +280,7 @@ export default function SettingsScreen() {
 
   const disconnectProvider = useCallback(
     async (providerID: string) => {
-      setBusy(providerID)
+      setProviderBusy(providerID)
       setProviderError(null)
 
       const result = await fetch(endpoint(clientUrl(), `/auth/${encodeURIComponent(providerID)}`), {
@@ -279,19 +293,19 @@ export default function SettingsScreen() {
         .catch((error) => ({ error }))
 
       if ("error" in result) {
-        setBusy(null)
+        setProviderBusy(null)
         setProviderError(errorMessage(result.error))
         return
       }
 
       if (!result.response.ok) {
-        setBusy(null)
+        setProviderBusy(null)
         setProviderError(`Failed to disconnect provider (${result.response.status})`)
         return
       }
 
       await refreshProviders()
-      setBusy(null)
+      setProviderBusy(null)
     },
     [refreshProviders],
   )
@@ -365,6 +379,84 @@ export default function SettingsScreen() {
     })
   }, [closeFlow, flow, pending])
 
+  const connectToServer = useCallback(
+    async (targetUrl: string) => {
+      setServerBusyAction("connect")
+      setServerBusy(targetUrl)
+      setServerError(null)
+
+      try {
+        await connect(targetUrl)
+        const result = await bootstrap()
+        if (result.status === "error") {
+          throw new Error(result.error ?? "Bootstrap failed")
+        }
+        router.replace("/(main)/session")
+        return true
+      } catch (error) {
+        setServerError(errorMessage(error))
+        return false
+      } finally {
+        setServerBusyAction(null)
+        setServerBusy(null)
+      }
+    },
+    [connect, router],
+  )
+
+  const handleAddServer = useCallback(async () => {
+    const normalized = normalizeServerUrl(addServerURL)
+    if (!normalized) {
+      setServerError("Server URL is invalid")
+      return
+    }
+
+    const auth = addAuthEnabled && addUsername.trim() ? { username: addUsername.trim(), password: addPassword } : undefined
+
+    setAddingServer(true)
+    setServerError(null)
+
+    try {
+      await saveServer(normalized, auth)
+      setAddServerURL("")
+      setAddAuthEnabled(false)
+      setAddUsername("")
+      setAddPassword("")
+    } catch (error) {
+      setServerError(errorMessage(error))
+    } finally {
+      setAddingServer(false)
+    }
+  }, [addAuthEnabled, addPassword, addServerURL, addUsername, saveServer])
+
+  const handleRemoveServer = useCallback(
+    async (targetUrl: string) => {
+      setServerBusyAction("remove")
+      setServerBusy(targetUrl)
+      setServerError(null)
+
+      try {
+        const result = await removeServer(targetUrl)
+        if (!result.removedActive) return
+        if (result.fallbackUrl) {
+          const connected = await connectToServer(result.fallbackUrl)
+          if (connected) return
+          disconnect()
+          router.replace("/connect")
+          return
+        }
+        disconnect()
+        router.replace("/connect")
+      } catch (error) {
+        setServerError(errorMessage(error))
+      } finally {
+        setServerBusyAction(null)
+        setServerBusy(null)
+      }
+    },
+    [connectToServer, disconnect, removeServer, router],
+  )
+
   const handleDisconnect = () => {
     disconnect()
     router.replace("/connect")
@@ -388,6 +480,136 @@ export default function SettingsScreen() {
           <View style={[styles.separator, { backgroundColor: theme.colors.border }]} />
           <Row label="Server Version" value={serverVersion ?? "Unknown"} theme={theme} />
         </View>
+
+        <Text style={[styles.sectionTitle, { color: theme.colors.textTertiary }]}>Saved Servers</Text>
+        <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+          {servers.length === 0 ? (
+            <View style={styles.emptyRow}>
+              <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>No saved servers</Text>
+            </View>
+          ) : (
+            servers.map((server, index) => (
+              <View key={server.url}>
+                {index > 0 ? <View style={[styles.separator, { backgroundColor: theme.colors.border }]} /> : null}
+                <View style={styles.row}>
+                  <View style={styles.providerMeta}>
+                    <Text style={[styles.rowLabel, { color: theme.colors.text }]}>{serverDisplayName(server.url)}</Text>
+                    <Text style={[styles.providerSub, { color: theme.colors.textTertiary }]}>
+                      {server.username ? `auth: ${server.username}` : "no auth"}
+                    </Text>
+                  </View>
+                  <View style={styles.serverActions}>
+                    {activeServerUrl === server.url && status === "connected" ? (
+                      <Text style={[styles.providerActionMuted, { color: theme.colors.accent }]}>Connected</Text>
+                    ) : (
+                      <Pressable
+                        onPress={() => void connectToServer(server.url)}
+                        disabled={!!serverBusy || addingServer}
+                      >
+                        <Text style={[styles.providerAction, { color: theme.colors.accent }]}>
+                          {serverBusy === server.url && serverBusyAction === "connect" ? "Connecting..." : "Connect"}
+                        </Text>
+                      </Pressable>
+                    )}
+                    <Pressable
+                      onPress={() => void handleRemoveServer(server.url)}
+                      disabled={!!serverBusy || addingServer}
+                    >
+                      <Text style={[styles.providerAction, { color: theme.colors.error }]}>
+                        {serverBusy === server.url && serverBusyAction === "remove" ? "Removing..." : "Remove"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            ))
+          )}
+        </View>
+
+        <Text style={[styles.sectionTitle, { color: theme.colors.textTertiary }]}>Add Server</Text>
+        <View style={[styles.serverFormCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+          <TextInput
+            style={[
+              styles.serverInput,
+              {
+                color: theme.colors.text,
+                borderColor: theme.colors.border,
+                backgroundColor: theme.colors.background,
+              },
+            ]}
+            value={addServerURL}
+            onChangeText={setAddServerURL}
+            placeholder="https://your-server.ngrok.io"
+            placeholderTextColor={theme.colors.textTertiary}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            editable={!addingServer && !serverBusy}
+            onSubmitEditing={() => void handleAddServer()}
+          />
+          <Pressable onPress={() => setAddAuthEnabled((value) => !value)} disabled={addingServer || !!serverBusy}>
+            <Text style={[styles.authToggleText, { color: theme.colors.accent }]}>
+              {addAuthEnabled ? "Hide authentication" : "Add authentication"}
+            </Text>
+          </Pressable>
+          {addAuthEnabled ? (
+            <View style={styles.authFields}>
+              <TextInput
+                style={[
+                  styles.serverInput,
+                  {
+                    color: theme.colors.text,
+                    borderColor: theme.colors.border,
+                    backgroundColor: theme.colors.background,
+                  },
+                ]}
+                value={addUsername}
+                onChangeText={setAddUsername}
+                placeholder="Username"
+                placeholderTextColor={theme.colors.textTertiary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!addingServer && !serverBusy}
+              />
+              <TextInput
+                style={[
+                  styles.serverInput,
+                  {
+                    color: theme.colors.text,
+                    borderColor: theme.colors.border,
+                    backgroundColor: theme.colors.background,
+                  },
+                ]}
+                value={addPassword}
+                onChangeText={setAddPassword}
+                placeholder="Password"
+                placeholderTextColor={theme.colors.textTertiary}
+                secureTextEntry
+                autoCapitalize="none"
+                editable={!addingServer && !serverBusy}
+              />
+            </View>
+          ) : null}
+          <Pressable
+            style={[
+              styles.serverPrimaryButton,
+              {
+                backgroundColor: theme.colors.accent,
+                opacity: addingServer || !!serverBusy || !addServerURL.trim() ? 0.6 : 1,
+              },
+            ]}
+            onPress={() => void handleAddServer()}
+            disabled={addingServer || !!serverBusy || !addServerURL.trim()}
+          >
+            {addingServer ? (
+              <ActivityIndicator color={theme.colors.accentText} />
+            ) : (
+              <Text style={[styles.serverPrimaryText, { color: theme.colors.accentText }]}>Save Server</Text>
+            )}
+          </Pressable>
+        </View>
+
+        {serverError ? <Text style={[styles.inlineError, { color: theme.colors.error }]}>{serverError}</Text> : null}
 
         <Pressable style={[styles.destructiveButton, { borderColor: theme.colors.border }]} onPress={handleDisconnect}>
           <Text style={[styles.destructiveText, { color: theme.colors.error }]}>Disconnect</Text>
@@ -426,9 +648,9 @@ export default function SettingsScreen() {
                   {provider.source === "env" ? (
                     <Text style={[styles.providerActionMuted, { color: theme.colors.textTertiary }]}>env</Text>
                   ) : (
-                    <Pressable onPress={() => disconnectProvider(provider.id)} disabled={busy === provider.id}>
+                    <Pressable onPress={() => disconnectProvider(provider.id)} disabled={providerBusy === provider.id}>
                       <Text style={[styles.providerAction, { color: theme.colors.error }]}>
-                        {busy === provider.id ? "Removing..." : "Remove"}
+                        {providerBusy === provider.id ? "Removing..." : "Remove"}
                       </Text>
                     </Pressable>
                   )}
@@ -683,6 +905,11 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 2,
   },
+  serverActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+  },
   providerSub: {
     fontSize: 12,
   },
@@ -704,6 +931,36 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 14,
+  },
+  serverFormCard: {
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 12,
+    gap: 10,
+  },
+  serverInput: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    fontSize: 14,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === "ios" ? 10 : 8,
+  },
+  authFields: {
+    gap: 10,
+  },
+  authToggleText: {
+    fontSize: 13,
+    fontWeight: "500",
+  },
+  serverPrimaryButton: {
+    borderRadius: 10,
+    paddingVertical: 11,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  serverPrimaryText: {
+    fontSize: 14,
+    fontWeight: "600",
   },
   inlineError: {
     fontSize: 13,

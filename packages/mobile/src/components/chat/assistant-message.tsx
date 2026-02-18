@@ -1,5 +1,6 @@
 import { memo, useCallback, useMemo } from "react"
 import { View, Text, StyleSheet, Pressable, Alert } from "react-native"
+import Feather from "@expo/vector-icons/Feather"
 import type { AssistantMessage as AssistantMessageData, Message, Part } from "@opencode-ai/sdk/client"
 import * as Haptics from "expo-haptics"
 import * as Clipboard from "expo-clipboard"
@@ -7,6 +8,8 @@ import { useMessageParts } from "../../api/hooks"
 import { useMessages } from "../../store/messages"
 import { useTheme } from "../../theme"
 import { PartRenderer } from "./part"
+
+const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
 
 type Props = {
   message: AssistantMessageData
@@ -59,13 +62,24 @@ export const AssistantMessage = memo(function AssistantMessage({ message, showFo
             {totalTokens > 0 ? `${formatTokens(totalTokens)} tokens` : "0 tokens"}
           </Text>
           <View style={styles.footerActions}>
-            <Pressable onPress={onRetry} disabled={!canRetry}>
-              <Text style={[styles.footerActionText, { color: canRetry ? theme.colors.textTertiary : theme.colors.textTertiary + "80" }]}>
-                Retry
-              </Text>
+            <Pressable
+              style={({ pressed }) => [styles.footerIconButton, pressed && styles.footerIconButtonPressed]}
+              onPress={onRetry}
+              disabled={!canRetry}
+              accessibilityRole="button"
+              accessibilityLabel="Retry response"
+              hitSlop={8}
+            >
+              <FeatherIcon name="rotate-ccw" size={14} color={canRetry ? theme.colors.textTertiary : theme.colors.textTertiary + "80"} />
             </Pressable>
-            <Pressable onPress={onCopy}>
-              <Text style={[styles.footerActionText, { color: theme.colors.textTertiary }]}>Copy</Text>
+            <Pressable
+              style={({ pressed }) => [styles.footerIconButton, pressed && styles.footerIconButtonPressed]}
+              onPress={onCopy}
+              accessibilityRole="button"
+              accessibilityLabel="Copy response"
+              hitSlop={8}
+            >
+              <FeatherIcon name="copy" size={14} color={theme.colors.textTertiary} />
             </Pressable>
           </View>
         </View>
@@ -172,10 +186,16 @@ const styles = StyleSheet.create({
   footerActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 4,
   },
-  footerActionText: {
-    fontSize: 11,
-    fontWeight: "500",
+  footerIconButton: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  footerIconButtonPressed: {
+    opacity: 0.6,
   },
 })

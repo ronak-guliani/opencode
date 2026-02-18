@@ -62,7 +62,7 @@ function stylesForVariant(theme: Theme, variant: "default" | "reasoning"): Recor
     ? { fontFamily: "Geist", fontStyle: "italic" }
     : { fontFamily: "Geist" }
   const bodySize = isReasoning ? 13 : 15
-  const bodyLine = isReasoning ? 18 : 22
+  const bodyLine = isReasoning ? 18 : 25
   const heading1Size = isReasoning ? 16 : 22
   const heading2Size = isReasoning ? 15 : 19
   const heading3Size = isReasoning ? 14 : 17

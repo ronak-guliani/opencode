@@ -1,9 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import { create as createStore } from "zustand"
 import type { Event, Message, Part } from "@opencode-ai/sdk/client"
-import { client } from "../api/client"
+import { client, url as clientUrl } from "../api/client"
 import { useSessions } from "./sessions"
 import { useSettings } from "./settings"
+import { normalizeServerUrl } from "../util/server"
 
 type MessageEvent =
   | Extract<Event, { type: "message.updated" }>
@@ -23,6 +24,7 @@ type MessageState = {
   oldestCursor: Record<string, string | null>
   hydrated: Record<string, boolean>
   sessionOrder: string[]
+  reset: () => void
   load: (sessionID: string, opts?: { force?: boolean; limit?: number; compact?: boolean }) => Promise<void>
   loadMore: (sessionID: string) => Promise<void>
   prefetch: (sessionIDs: string[], opts?: { limit?: number }) => Promise<void>
@@ -55,7 +57,6 @@ const MAX_MESSAGE_LIMIT = 5_000
 const MAX_ACTIVE_SESSIONS = 6
 const MAX_PERSISTED_SESSIONS = 12
 const CACHE_KEY_PREFIX = "opencode-mobile:chat-cache:v2:"
-const CACHE_INDEX_KEY = `${CACHE_KEY_PREFIX}index`
 
 const persistTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -98,8 +99,21 @@ function isHydratedParts(parts: Part[]) {
   return !parts.some(hasTruncatedPart)
 }
 
+function cacheScope() {
+  try {
+    const value = clientUrl()
+    return encodeURIComponent(normalizeServerUrl(value) ?? value)
+  } catch {
+    return "disconnected"
+  }
+}
+
+function cacheIndexKey() {
+  return `${CACHE_KEY_PREFIX}${cacheScope()}:index`
+}
+
 function cacheKey(sessionID: string) {
-  return `${CACHE_KEY_PREFIX}${sessionID}`
+  return `${CACHE_KEY_PREFIX}${cacheScope()}:${sessionID}`
 }
 
 async function readCachedSession(sessionID: string) {
@@ -116,12 +130,13 @@ async function readCachedSession(sessionID: string) {
 
 async function touchPersistedIndex(sessionID: string) {
   try {
-    const raw = await AsyncStorage.getItem(CACHE_INDEX_KEY)
+    const key = cacheIndexKey()
+    const raw = await AsyncStorage.getItem(key)
     const prev = raw ? ((JSON.parse(raw) as { order?: string[] }).order ?? []) : []
     const order = [sessionID, ...prev.filter((id) => id !== sessionID)]
     const evicted = order.slice(MAX_PERSISTED_SESSIONS)
     const keep = order.slice(0, MAX_PERSISTED_SESSIONS)
-    await AsyncStorage.setItem(CACHE_INDEX_KEY, JSON.stringify({ order: keep }))
+    await AsyncStorage.setItem(key, JSON.stringify({ order: keep }))
     if (evicted.length > 0) {
       await AsyncStorage.multiRemove(evicted.map((id) => cacheKey(id)))
     }
@@ -277,6 +292,25 @@ export const useMessages = createStore<MessageState>((set, get) => {
     oldestCursor: {},
     hydrated: {},
     sessionOrder: [],
+    reset: () => {
+      for (const timer of persistTimers.values()) {
+        clearTimeout(timer)
+      }
+      persistTimers.clear()
+      set({
+        messages: {},
+        parts: {},
+        sending: {},
+        loading: {},
+        prefetching: {},
+        hydrating: {},
+        loadedAt: {},
+        exhausted: {},
+        oldestCursor: {},
+        hydrated: {},
+        sessionOrder: [],
+      })
+    },
 
     load: async (sessionID, opts) => {
       const state = get()

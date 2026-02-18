@@ -28,6 +28,7 @@ type RequestState = {
   permissions: Permission[]
   questions: PendingQuestion[]
   loading: boolean
+  reset: () => void
   refresh: () => Promise<void>
   replyPermission: (requestID: string, reply: PermissionReply, message?: string) => Promise<void>
   replyQuestion: (requestID: string, answers: QuestionAnswer[]) => Promise<void>
@@ -56,6 +57,13 @@ export const useRequests = createStore<RequestState>((set, get) => ({
   permissions: [],
   questions: [],
   loading: false,
+
+  reset: () =>
+    set({
+      permissions: [],
+      questions: [],
+      loading: false,
+    }),
 
   refresh: async () => {
     set({ loading: true })

@@ -30,6 +30,7 @@ type SessionState = {
   statuses: Record<string, SessionStatus>
   current: string | null
   loading: boolean
+  reset: () => void
   select: (id: string | null) => void
   fetch: () => Promise<void>
   fetchStatuses: () => Promise<void>
@@ -47,6 +48,15 @@ export const useSessions = createStore<SessionState>((set, get) => ({
   statuses: {},
   current: null,
   loading: false,
+
+  reset: () =>
+    set({
+      projects: [],
+      sessions: [],
+      statuses: {},
+      current: null,
+      loading: false,
+    }),
 
   select: (id) => set({ current: id }),
 

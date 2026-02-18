@@ -578,7 +578,7 @@ function formatInput(input: Record<string, unknown>): string {
 const styles = StyleSheet.create({
   text: {
     fontSize: 15,
-    lineHeight: 23,
+    lineHeight: 24,
   },
   infoBody: {
     fontSize: 13,
@@ -603,23 +603,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     gap: 8,
-    marginTop: 4,
+    marginTop: 3,
   },
   collapsibleContainer: {
-    marginVertical: 4,
+    marginVertical: 1,
     overflow: "hidden",
   },
   collapsibleRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    minHeight: 32,
-    gap: 10,
+    minHeight: 28,
+    gap: 8,
   },
   collapsibleLabel: {
     flex: 1,
     fontSize: 15,
-    lineHeight: 20,
+    lineHeight: 19,
     fontWeight: "500",
   },
   collapsibleChevron: {

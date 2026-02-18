@@ -15,6 +15,7 @@ type SettingsState = {
   favorites: ModelMap
   removed: ModelMap
   appearance: Appearance
+  resetRemote: () => void
   fetchConfig: () => Promise<void>
   fetchProviders: () => Promise<void>
   fetchProviderAuth: () => Promise<void>
@@ -116,6 +117,13 @@ export const useSettings = createStore<SettingsState>((set, get) => ({
   favorites: {},
   removed: {},
   appearance: "system",
+
+  resetRemote: () =>
+    set({
+      config: null,
+      providerData: null,
+      providerAuth: null,
+    }),
 
   fetchConfig: async () => {
     try {

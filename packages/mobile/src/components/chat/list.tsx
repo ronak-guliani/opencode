@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef } from "react"
-import { Platform, StyleSheet, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Platform, StyleSheet, Pressable, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native"
 import type { Message } from "@opencode-ai/sdk/client"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list"
 import { useMessages } from "../../store/messages"
 import { useChat } from "./provider"
+import { useTheme } from "../../theme"
 import { UserMessage } from "./user-message"
 import { AssistantMessage } from "./assistant-message"
 
 const STREAM_AUTOFOLLOW_MIN_GROWTH = 8
+const JUMP_TO_BOTTOM_DISTANCE = 320
 
 type Props = {
   sessionId: string
@@ -18,10 +20,12 @@ type Props = {
 
 export function MessagesList({ sessionId, messages, topPadding }: Props) {
   const insets = useSafeAreaInsets()
+  const theme = useTheme()
   const { listRef, isAtEnd, messageCount, composerH } = useChat()
   const loadMore = useMessages((s) => s.loadMore)
   const loadingMap = useMessages((s) => s.loading)
   const exhaustedMap = useMessages((s) => s.exhausted)
+  const [showJump, setShowJump] = useState(false)
 
   const didInitialScroll = useRef(false)
   const prevCount = useRef(0)
@@ -30,6 +34,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   const userInteractingRef = useRef(false)
   const momentumActiveRef = useRef(false)
   const contentHeightRef = useRef(0)
+  const jumpVisibleRef = useRef(false)
 
   const count = messages.length
   const latestAssistantIndex = useMemo(() => {
@@ -42,7 +47,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   const loadingSession = loadingMap[sessionId] ?? false
   const exhaustedSession = exhaustedMap[sessionId] ?? false
   const padTop = topPadding ?? insets.top + 16
-  const padBottom = Math.max(composerH, 120 + insets.bottom)
+  const padBottom = Math.max(insets.bottom + 12, composerH + 4)
 
   const scheduleScrollToEnd = useCallback(
     (animated: boolean) => {
@@ -52,6 +57,10 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
       }
       raf.current = requestAnimationFrame(() => {
         listRef.current?.scrollToEnd({ animated })
+        if (jumpVisibleRef.current) {
+          jumpVisibleRef.current = false
+          setShowJump(false)
+        }
         raf.current = null
       })
     },
@@ -73,6 +82,8 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     userInteractingRef.current = false
     momentumActiveRef.current = false
     contentHeightRef.current = 0
+    jumpVisibleRef.current = false
+    setShowJump(false)
     if (raf.current !== null) {
       cancelAnimationFrame(raf.current)
       raf.current = null
@@ -82,13 +93,6 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   useEffect(() => {
     messageCount.value = count
   }, [count, messageCount])
-
-  useEffect(() => {
-    if (count > 0 && !didInitialScroll.current) {
-      didInitialScroll.current = true
-      scheduleScrollToEnd(false)
-    }
-  }, [count, scheduleScrollToEnd])
 
   useEffect(() => {
     loadingMoreRef.current = loadingSession
@@ -112,6 +116,11 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
       const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent
       const distance = contentSize.height - contentOffset.y - layoutMeasurement.height
       isAtEnd.value = distance < 150
+      const shouldShow = distance > JUMP_TO_BOTTOM_DISTANCE
+      if (jumpVisibleRef.current !== shouldShow) {
+        jumpVisibleRef.current = shouldShow
+        setShowJump(shouldShow)
+      }
     },
     [isAtEnd],
   )
@@ -166,52 +175,104 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   )
 
   useEffect(() => {
+    if (!didInitialScroll.current) {
+      prevCount.current = count
+      return
+    }
+    if (prevCount.current === 0) {
+      prevCount.current = count
+      return
+    }
     if (count > prevCount.current && isAtEnd.value && !userInteractingRef.current) {
-      scheduleScrollToEnd(true)
+      scheduleScrollToEnd(false)
     }
     prevCount.current = count
   }, [count, scheduleScrollToEnd, isAtEnd])
 
   return (
-    <FlashList
-      ref={listRef}
-      data={messages}
-      renderItem={renderItem}
-      keyExtractor={keyExtractor}
-      getItemType={(item) => item.role}
-      style={styles.list}
-      contentContainerStyle={contentContainerStyle}
-      onScroll={handleScroll}
-      onScrollBeginDrag={onScrollBeginDrag}
-      onScrollEndDrag={onScrollEndDrag}
-      onMomentumScrollBegin={onMomentumScrollBegin}
-      onMomentumScrollEnd={onMomentumScrollEnd}
-      onContentSizeChange={onContentSizeChange}
-      scrollEventThrottle={16}
-      drawDistance={Platform.OS === "ios" ? 900 : 600}
-      onStartReached={onStartReached}
-      onStartReachedThreshold={0.08}
-      keyboardDismissMode="interactive"
-      keyboardShouldPersistTaps="handled"
-      showsVerticalScrollIndicator={false}
-      maintainVisibleContentPosition={
-        count < 1200
-          ? {
-              autoscrollToTopThreshold: 0.2,
-            }
-          : { disabled: true }
-      }
-      removeClippedSubviews={Platform.OS !== "ios"}
-    />
+    <View style={styles.wrapper}>
+      <FlashList
+        ref={listRef}
+        data={messages}
+        renderItem={renderItem}
+        keyExtractor={keyExtractor}
+        getItemType={(item) => item.role}
+        style={styles.list}
+        contentContainerStyle={contentContainerStyle}
+        onScroll={handleScroll}
+        onScrollBeginDrag={onScrollBeginDrag}
+        onScrollEndDrag={onScrollEndDrag}
+        onMomentumScrollBegin={onMomentumScrollBegin}
+        onMomentumScrollEnd={onMomentumScrollEnd}
+        onContentSizeChange={onContentSizeChange}
+        onLoad={() => {
+          didInitialScroll.current = true
+        }}
+        scrollEventThrottle={16}
+        drawDistance={Platform.OS === "ios" ? 900 : 600}
+        onStartReached={onStartReached}
+        onStartReachedThreshold={0.08}
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        maintainVisibleContentPosition={{
+          startRenderingFromBottom: true,
+          autoscrollToTopThreshold: count < 1200 ? 0.2 : undefined,
+          autoscrollToBottomThreshold: count < 1200 ? 0.2 : undefined,
+          animateAutoScrollToBottom: false,
+        }}
+        removeClippedSubviews={Platform.OS !== "ios"}
+      />
+      {showJump ? (
+        <Pressable
+          style={[
+            styles.jumpButton,
+            {
+              bottom: Math.max(composerH + 14, insets.bottom + 60),
+              backgroundColor: theme.colors.surfaceRaised,
+              borderColor: theme.colors.border,
+            },
+          ]}
+          onPress={() => {
+            userInteractingRef.current = false
+            momentumActiveRef.current = false
+            scheduleScrollToEnd(false)
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Scroll to bottom"
+          hitSlop={8}
+        >
+          <Text style={[styles.jumpGlyph, { color: theme.colors.text }]}>{"\u2193"}</Text>
+        </Pressable>
+      ) : null}
+    </View>
   )
 }
 
 const styles = StyleSheet.create({
+  wrapper: {
+    flex: 1,
+  },
   list: {
     flex: 1,
   },
   content: {
     flexGrow: 1,
     paddingHorizontal: 16,
+  },
+  jumpButton: {
+    position: "absolute",
+    right: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  jumpGlyph: {
+    fontSize: 17,
+    lineHeight: 18,
+    fontWeight: "700",
   },
 })
