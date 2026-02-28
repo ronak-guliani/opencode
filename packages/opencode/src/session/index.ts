@@ -493,15 +493,32 @@ export namespace Session {
     z.object({
       sessionID: Identifier.schema("session"),
       limit: z.number().optional(),
+      beforeMessageID: Identifier.schema("message").optional(),
+      afterMessageID: Identifier.schema("message").optional(),
+      compact: z.boolean().optional(),
     }),
     async (input) => {
       const result = [] as MessageV2.WithParts[]
       for await (const msg of MessageV2.stream(input.sessionID)) {
-        if (input.limit && result.length >= input.limit) break
         result.push(msg)
       }
-      result.reverse()
-      return result
+
+      let filtered = result
+      if (input.beforeMessageID) {
+        const index = filtered.findIndex((msg) => msg.info.id === input.beforeMessageID)
+        filtered = index >= 0 ? filtered.slice(index + 1) : []
+      }
+
+      if (input.afterMessageID) {
+        const index = filtered.findIndex((msg) => msg.info.id === input.afterMessageID)
+        filtered = index >= 0 ? filtered.slice(0, index) : []
+      }
+
+      if (input.limit) filtered = filtered.slice(0, input.limit)
+
+      filtered.reverse()
+      if (!input.compact) return filtered
+      return filtered.map((msg) => MessageV2.compactMessage(msg))
     },
   )
 
