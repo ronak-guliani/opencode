@@ -14,8 +14,8 @@ export const UserMessage = memo(function UserMessage({ message }: Props) {
   const parts = useMessageParts(message.id)
 
   const text = parts
-    .filter((p) => p.type === "text")
-    .map((p) => (p as { text: string }).text)
+    .filter((part): part is Extract<Part, { type: "text" }> => part.type === "text")
+    .map((part) => part.text)
     .join("")
   const summary = parts.map(partSummary).filter(Boolean).join("\n")
 

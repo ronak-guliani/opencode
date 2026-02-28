@@ -20,7 +20,7 @@ export const RequestBanner = memo(function RequestBanner({ sessionId }: Props) {
   const handlePermissionReply = useCallback(
     async (id: string, reply: "once" | "always" | "reject") => {
       try {
-        Haptics.selectionAsync()
+        void Haptics.selectionAsync()
         await replyPermission(id, reply)
       } catch {
         Alert.alert("Request failed", "Could not send permission response.")
@@ -32,7 +32,7 @@ export const RequestBanner = memo(function RequestBanner({ sessionId }: Props) {
   const handleRejectQuestion = useCallback(
     async (id: string) => {
       try {
-        Haptics.selectionAsync()
+        void Haptics.selectionAsync()
         await rejectQuestion(id)
       } catch {
         Alert.alert("Request failed", "Could not reject question.")
@@ -44,7 +44,7 @@ export const RequestBanner = memo(function RequestBanner({ sessionId }: Props) {
   const handleQuestionSubmit = useCallback(
     async (id: string, answers: string[][]) => {
       try {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
         await replyQuestion(id, answers)
       } catch {
         Alert.alert("Request failed", "Could not submit answer.")
@@ -110,11 +110,11 @@ function QuestionCard({
   useEffect(() => {
     setSelected(question.questions.map(() => []))
     setCustom(question.questions.map(() => ""))
-  }, [question.id])
+  }, [question.id, question.questions])
 
   const selectOption = useCallback(
     (questionIndex: number, label: string, multiple: boolean) => {
-      Haptics.selectionAsync()
+      void Haptics.selectionAsync()
       setSelected((state) => {
         const next = state.map((answers) => [...answers])
         const current = next[questionIndex] ?? []

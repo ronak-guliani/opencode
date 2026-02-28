@@ -4,25 +4,34 @@ import { useLocalSearchParams, useRouter } from "expo-router"
 import Feather from "@expo/vector-icons/Feather"
 import { LinearGradient } from "expo-linear-gradient"
 import * as Haptics from "expo-haptics"
+import * as Clipboard from "expo-clipboard"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
-import { useMessages as useMessageStore } from "../../../src/store/messages"
-import { useSessions } from "../../../src/store/sessions"
-import { useRequests } from "../../../src/store/requests"
-import { useConnection } from "../../../src/store/connection"
-import { useSidebar } from "../../../src/store/sidebar"
-import { useSessionMessages } from "../../../src/api/hooks"
-import { useTheme } from "../../../src/theme"
-import { ChatProvider } from "../../../src/components/chat/provider"
-import { MessagesList } from "../../../src/components/chat/list"
-import { Composer } from "../../../src/components/chat/composer"
-import { RequestBanner } from "../../../src/components/chat/request-banner"
-import { DisableFadeProvider } from "../../../src/animation"
-import { markChatFirstPaint, markChatInteractionReady, markChatOpenStart } from "../../../src/perf/chat-metrics"
+import { useMessages as useMessageStore } from "../../../../src/store/messages"
+import { useSessions } from "../../../../src/store/sessions"
+import { useRequests } from "../../../../src/store/requests"
+import { useConnection } from "../../../../src/store/connection"
+import { useSidebar } from "../../../../src/store/sidebar"
+import { useSessionMessages } from "../../../../src/api/hooks"
+import { useTheme } from "../../../../src/theme"
+import { ChatProvider } from "../../../../src/components/chat/provider"
+import { MessagesList } from "../../../../src/components/chat/list"
+import { Composer } from "../../../../src/components/chat/composer"
+import { RequestBanner } from "../../../../src/components/chat/request-banner"
+import { MessageSkeleton } from "../../../../src/components/skeleton"
+import { DisableFadeProvider } from "../../../../src/animation"
+import { markChatFirstPaint, markChatInteractionReady, markChatOpenStart } from "../../../../src/perf/chat-metrics"
+import { addCrashBreadcrumb, readCrashBreadcrumbs } from "../../../../src/perf/crash-breadcrumbs"
 
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
 const REQUEST_POLL_BUSY_MS = 4_000
 const REQUEST_POLL_PENDING_MS = 8_000
 const REQUEST_POLL_IDLE_MS = 45_000
+const MESSAGE_RESYNC_BUSY_MS = 3_000
+const MESSAGE_RESYNC_IDLE_MS = 12_000
+const SESSION_OPEN_LIMIT = 24
+const SESSION_PREFETCH_DELAY_MS = 550
+const SESSION_PREFETCH_NEIGHBORS = 2
+const SESSION_PREFETCH_LIMIT = 10
 const TITLE_FADE_WIDTH = 22
 
 export default function SessionScreen() {
@@ -31,19 +40,29 @@ export default function SessionScreen() {
   const insets = useSafeAreaInsets()
   const theme = useTheme()
   const load = useMessageStore((s) => s.load)
+  const prefetch = useMessageStore((s) => s.prefetch)
+  const loadingMessages = useMessageStore((s) => (id ? (s.loading[id] ?? false) : false))
   const create = useSessions((s) => s.create)
-  const sessions = useSessions((s) => s.sessions)
+  const session = useSessions((s) => (id ? s.sessions.find((item) => item.id === id) : undefined))
   const select = useSessions((s) => s.select)
   const refreshRequests = useRequests((s) => s.refresh)
-  const permissions = useRequests((s) => s.permissions)
-  const questions = useRequests((s) => s.questions)
+  const pendingRequestCount = useRequests((s) => {
+    if (!id) return 0
+    let total = 0
+    for (const permission of s.permissions) {
+      if (permission.sessionID === id) total += 1
+    }
+    for (const question of s.questions) {
+      if (question.sessionID === id) total += 1
+    }
+    return total
+  })
   const directory = useConnection((s) => s.directory)
   const stream = useConnection((s) => s.stream)
   const switchDirectory = useConnection((s) => s.switchDirectory)
   const requestOpen = useSidebar((s) => s.requestOpen)
   const messages = useSessionMessages(id)
   const sessionStatus = useSessions((s) => (id ? s.statuses[id] : undefined))
-  const session = useMemo(() => sessions.find((item) => item.id === id), [sessions, id])
   const title = (session?.title || "").trim() || "Untitled session"
   const titleFadeStart = useMemo(() => withAlpha(theme.colors.background, "00"), [theme.colors.background])
   // Track which sessions have been viewed — disable fade for revisited chats
@@ -51,12 +70,6 @@ export default function SessionScreen() {
   const wasSeen = id ? seen.current.has(id) : false
   const appStateRef = useRef<AppStateStatus>(AppState.currentState)
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pendingRequestCount = useMemo(() => {
-    if (!id) return 0
-    const permissionCount = permissions.filter((item) => item.sessionID === id).length
-    const questionCount = questions.filter((item) => item.sessionID === id).length
-    return permissionCount + questionCount
-  }, [id, permissions, questions])
   const isBusy = sessionStatus?.type === "busy"
 
   const clearPollTimer = useCallback(() => {
@@ -67,13 +80,13 @@ export default function SessionScreen() {
   }, [])
 
   const openSidebar = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     requestOpen()
   }, [requestOpen])
 
   const createSession = useCallback(async () => {
     try {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
       if (session?.directory && session.directory !== directory) {
         await switchDirectory(session.directory)
       }
@@ -86,31 +99,80 @@ export default function SessionScreen() {
   }, [session?.directory, directory, switchDirectory, create, select, router])
 
   const openOptions = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-    Alert.alert("Session options", "More actions are coming soon.", [
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+    const actions = [
       { text: "Share (soon)" },
       { text: "Export (soon)" },
+      {
+        text: "Copy Debug Breadcrumbs",
+        onPress: () => {
+          const payload = {
+            sessionID: id,
+            copiedAt: new Date().toISOString(),
+            breadcrumbs: readCrashBreadcrumbs(),
+          }
+          void Clipboard.setStringAsync(JSON.stringify(payload, null, 2))
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+          Alert.alert("Copied", "Debug breadcrumbs copied to clipboard.")
+        },
+      },
       { text: "Cancel", style: "cancel" },
-    ])
-  }, [])
+    ] as Array<{ text: string; style?: "cancel"; onPress?: () => void }>
+
+    Alert.alert("Session options", "More actions are coming soon.", actions)
+  }, [id])
 
   useEffect(() => {
     if (id) {
+      addCrashBreadcrumb("session-screen:open", {
+        sessionID: id,
+      })
       markChatOpenStart(id)
       select(id)
-      void load(id, { limit: 60, compact: true })
+      void load(id, { limit: SESSION_OPEN_LIMIT, compact: true })
+      addCrashBreadcrumb("session-screen:load", { sessionID: id, limit: SESSION_OPEN_LIMIT })
       // Mark as seen after a short delay to let initial content animate
       const timer = setTimeout(() => seen.current.add(id), 1500)
       const interactionTask = InteractionManager.runAfterInteractions(() => {
         markChatInteractionReady(id)
         void refreshRequests()
+        addCrashBreadcrumb("session-screen:interaction-ready", { sessionID: id })
       })
       return () => {
+        addCrashBreadcrumb("session-screen:cleanup", { sessionID: id })
         clearTimeout(timer)
         interactionTask.cancel()
       }
     }
-  }, [id, load, select, refreshRequests])
+  }, [id, load, refreshRequests, select])
+
+  useEffect(() => {
+    if (!id) return
+    let timeout: ReturnType<typeof setTimeout> | null = null
+    const task = InteractionManager.runAfterInteractions(() => {
+      timeout = setTimeout(() => {
+        const allSessions = useSessions.getState().sessions
+        const current = allSessions.find((item) => item.id === id)
+        if (!current?.directory) return
+        const neighbors = allSessions
+          .filter((item) => item.directory === current.directory && item.id !== id)
+          .slice(0, SESSION_PREFETCH_NEIGHBORS)
+          .map((item) => item.id)
+        if (neighbors.length === 0) return
+        addCrashBreadcrumb("session-screen:prefetch-neighbors", {
+          sessionID: id,
+          count: neighbors.length,
+          limit: SESSION_PREFETCH_LIMIT,
+        })
+        void prefetch(neighbors, { limit: SESSION_PREFETCH_LIMIT })
+      }, SESSION_PREFETCH_DELAY_MS)
+    })
+
+    return () => {
+      task.cancel()
+      if (timeout) clearTimeout(timeout)
+    }
+  }, [id, prefetch])
 
   useEffect(() => {
     if (!id) return
@@ -161,6 +223,35 @@ export default function SessionScreen() {
     if (!id || stream !== "connected") return
     void refreshRequests()
   }, [id, stream, refreshRequests])
+
+  useEffect(() => {
+    if (!id) return
+    if (stream === "connected") return
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const sync = async () => {
+      if (cancelled || appStateRef.current !== "active") return
+      try {
+        await load(id, { force: true, limit: SESSION_OPEN_LIMIT, compact: true })
+      } catch {
+        // ignore
+      }
+
+      if (cancelled || appStateRef.current !== "active") return
+      timer = setTimeout(() => {
+        void sync()
+      }, isBusy ? MESSAGE_RESYNC_BUSY_MS : MESSAGE_RESYNC_IDLE_MS)
+    }
+
+    void sync()
+
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [id, isBusy, load, stream])
 
   useEffect(() => {
     if (!id || messages.length === 0) return
@@ -237,7 +328,15 @@ export default function SessionScreen() {
             </View>
           </View>
 
-          <MessagesList sessionId={id} messages={messages} topPadding={16} />
+          {messages.length === 0 && loadingMessages ? (
+            <View style={styles.loadingState}>
+              <MessageSkeleton />
+              <MessageSkeleton />
+              <MessageSkeleton />
+            </View>
+          ) : (
+            <MessagesList sessionId={id} messages={messages} topPadding={16} />
+          )}
           <RequestBanner sessionId={id} />
           <Composer sessionId={id} />
         </View>
@@ -260,6 +359,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingBottom: 10,
     position: "relative",
+    zIndex: 20,
+    elevation: 20,
   },
   headerRow: {
     flexDirection: "row",
@@ -315,5 +416,11 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     width: TITLE_FADE_WIDTH,
+  },
+  loadingState: {
+    flex: 1,
+    paddingTop: 22,
+    paddingHorizontal: 4,
+    gap: 2,
   },
 })

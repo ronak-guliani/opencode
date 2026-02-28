@@ -5,12 +5,26 @@ import { client, url as clientUrl } from "../api/client"
 import { useSessions } from "./sessions"
 import { useSettings } from "./settings"
 import { normalizeServerUrl } from "../util/server"
+import { markChatFirstToken, markStreamLateDelta } from "../perf/chat-metrics"
+import { addCrashBreadcrumb } from "../perf/crash-breadcrumbs"
+
+type MessagePartDeltaEvent = {
+  type: "message.part.delta"
+  properties: {
+    sessionID: string
+    messageID: string
+    partID: string
+    field: string
+    delta: string
+  }
+}
 
 type MessageEvent =
   | Extract<Event, { type: "message.updated" }>
   | Extract<Event, { type: "message.removed" }>
   | Extract<Event, { type: "message.part.updated" }>
   | Extract<Event, { type: "message.part.removed" }>
+  | MessagePartDeltaEvent
 
 type MessageState = {
   messages: Record<string, Message[]>
@@ -48,15 +62,19 @@ type CachedSession = {
   entries: MessageWithParts[]
 }
 
-const MESSAGE_CACHE_TTL_MS = 30_000
-const PERSISTED_CACHE_TTL_MS = 5 * 60_000
+const MESSAGE_CACHE_TTL_MS = 5 * 60_000
+const PERSISTED_CACHE_TTL_MS = 24 * 60 * 60_000
 const INITIAL_MESSAGE_LIMIT = 60
-const LOAD_MORE_STEP = 60
-const PREFETCH_LIMIT = 20
+const LOAD_MORE_STEP = 40
+const PREFETCH_LIMIT = 12
 const MAX_MESSAGE_LIMIT = 5_000
-const MAX_ACTIVE_SESSIONS = 6
+const MAX_ACTIVE_SESSIONS = 8
 const MAX_PERSISTED_SESSIONS = 12
+const MAX_PERSISTED_MESSAGES_PER_SESSION = 140
+const PERSIST_MIN_INTERVAL_MS = 3_000
 const CACHE_KEY_PREFIX = "opencode-mobile:chat-cache:v2:"
+const MAX_PENDING_DELTA_ENTRIES = 1200
+const PENDING_DELTA_TRIM_TARGET = 900
 
 const persistTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -208,20 +226,56 @@ function mergeMessages(existing: Message[], incoming: Message[]) {
   return Array.from(byID.values()).sort(sortMessages)
 }
 
+function deltaBufferKey(messageID: string, partID: string, field: string) {
+  return `${messageID}:${partID}:${field}`
+}
+
+function appendPartDelta(part: Part, field: string, delta: string): Part {
+  if (!delta) return part
+  const current = (part as Record<string, unknown>)[field]
+  if (typeof current === "string") {
+    return {
+      ...(part as Record<string, unknown>),
+      [field]: current + delta,
+    } as Part
+  }
+  if (current === undefined || current === null) {
+    return {
+      ...(part as Record<string, unknown>),
+      [field]: delta,
+    } as Part
+  }
+  return part
+}
+
 export const useMessages = createStore<MessageState>((set, get) => {
+  // Delta events can arrive before part.updated; buffer until the part exists.
+  const pendingDeltas = new Map<string, string>()
+  const lastPersistAt = new Map<string, number>()
+
   const schedulePersist = (sessionID: string) => {
     const existing = persistTimers.get(sessionID)
     if (existing) clearTimeout(existing)
 
+    const now = Date.now()
+    const last = lastPersistAt.get(sessionID) ?? 0
+    const delay = Math.max(250, PERSIST_MIN_INTERVAL_MS - (now - last))
+
     const timer = setTimeout(() => {
       persistTimers.delete(sessionID)
       const state = get()
-      const sessionMessages = state.messages[sessionID] ?? []
-      if (sessionMessages.length === 0) return
+      const fullSessionMessages = state.messages[sessionID] ?? []
+      if (fullSessionMessages.length === 0) return
+
+      // Keep cache writes bounded so very large history sessions do not block JS.
+      const sessionMessages =
+        fullSessionMessages.length > MAX_PERSISTED_MESSAGES_PER_SESSION
+          ? fullSessionMessages.slice(-MAX_PERSISTED_MESSAGES_PER_SESSION)
+          : fullSessionMessages
 
       const payload: CachedSession = {
         savedAt: Date.now(),
-        oldestCursor: state.oldestCursor[sessionID] ?? sessionMessages[0]?.id ?? null,
+        oldestCursor: sessionMessages[0]?.id ?? null,
         exhausted: state.exhausted[sessionID] ?? false,
         entries: sessionMessages.map((info) => ({
           info,
@@ -234,7 +288,8 @@ export const useMessages = createStore<MessageState>((set, get) => {
         .catch(() => {
           // ignore cache write errors
         })
-    }, 250)
+      lastPersistAt.set(sessionID, Date.now())
+    }, delay)
 
     persistTimers.set(sessionID, timer)
   }
@@ -293,6 +348,8 @@ export const useMessages = createStore<MessageState>((set, get) => {
     hydrated: {},
     sessionOrder: [],
     reset: () => {
+      pendingDeltas.clear()
+      lastPersistAt.clear()
       for (const timer of persistTimers.values()) {
         clearTimeout(timer)
       }
@@ -313,6 +370,12 @@ export const useMessages = createStore<MessageState>((set, get) => {
     },
 
     load: async (sessionID, opts) => {
+      const startAt = Date.now()
+      addCrashBreadcrumb("messages-load:start", {
+        sessionID,
+        limit: opts?.limit ?? INITIAL_MESSAGE_LIMIT,
+        force: !!opts?.force,
+      })
       const state = get()
       if (state.loading[sessionID]) return
 
@@ -322,6 +385,23 @@ export const useMessages = createStore<MessageState>((set, get) => {
       const loadedAt = state.loadedAt[sessionID]
 
       if (!opts?.force && hasMessages && loadedAt && now - loadedAt < MESSAGE_CACHE_TTL_MS) {
+        addCrashBreadcrumb("messages-load:skip-memory-ttl", {
+          sessionID,
+          ageMs: now - loadedAt,
+          count: state.messages[sessionID]?.length ?? 0,
+        })
+        set((prev) => ({
+          sessionOrder: touchSessionOrder(prev.sessionOrder, sessionID),
+        }))
+        return
+      }
+
+      if (!opts?.force && hasMessages) {
+        addCrashBreadcrumb("messages-load:skip-memory", {
+          sessionID,
+          ageMs: loadedAt ? now - loadedAt : -1,
+          count: state.messages[sessionID]?.length ?? 0,
+        })
         set((prev) => ({
           sessionOrder: touchSessionOrder(prev.sessionOrder, sessionID),
         }))
@@ -333,9 +413,18 @@ export const useMessages = createStore<MessageState>((set, get) => {
         if (cached && cached.entries.length > 0) {
           const cacheAge = now - cached.savedAt
           applyLoadedEntries(sessionID, cached.entries, limit, cached.savedAt)
-          if (cacheAge < PERSISTED_CACHE_TTL_MS) {
-            return
+          addCrashBreadcrumb("messages-load:cache-hit", {
+            sessionID,
+            ageMs: cacheAge,
+            count: cached.entries.length,
+          })
+          if (cacheAge >= PERSISTED_CACHE_TTL_MS) {
+            addCrashBreadcrumb("messages-load:cache-stale-used", {
+              sessionID,
+              ageMs: cacheAge,
+            })
           }
+          return
         }
       }
 
@@ -361,13 +450,27 @@ export const useMessages = createStore<MessageState>((set, get) => {
           const entries = result.data as MessageWithParts[]
           applyLoadedEntries(sessionID, entries, limit, Date.now())
           schedulePersist(sessionID)
+          addCrashBreadcrumb("messages-load:network-done", {
+            sessionID,
+            count: entries.length,
+            elapsedMs: Math.round(elapsed),
+            totalMs: Date.now() - startAt,
+          })
           if (__DEV__) {
             const bytes = JSON.stringify(result.data).length
             console.log(`[chat-load] ${sessionID} limit=${limit} time=${elapsed.toFixed(1)}ms bytes=${bytes}`)
           }
         }
-      } catch {
-        // ignore
+      } catch (error) {
+        addCrashBreadcrumb(
+          "messages-load:error",
+          {
+            sessionID,
+            totalMs: Date.now() - startAt,
+            message: error instanceof Error ? error.message : String(error),
+          },
+          "warn",
+        )
       } finally {
         set((prev) => ({
           loading: {
@@ -715,6 +818,12 @@ export const useMessages = createStore<MessageState>((set, get) => {
               messages[sessionID] = next
               delete parts[messageID]
               delete hydrated[messageID]
+              const removedPrefix = `${messageID}:`
+              for (const key of pendingDeltas.keys()) {
+                if (key.startsWith(removedPrefix)) {
+                  pendingDeltas.delete(key)
+                }
+              }
               oldestCursor[sessionID] = next[0]?.id ?? null
               loadedAt[sessionID] = Date.now()
               changed = true
@@ -727,19 +836,70 @@ export const useMessages = createStore<MessageState>((set, get) => {
               touchedSessions.add(sessionID)
               touchedForPersist.add(sessionID)
 
+              let nextPart = part as Part
+              const prefix = `${part.messageID}:${part.id}:`
+              for (const [key, bufferedDelta] of pendingDeltas.entries()) {
+                if (!key.startsWith(prefix)) continue
+                const field = key.slice(prefix.length)
+                nextPart = appendPartDelta(nextPart, field, bufferedDelta)
+                if (field === "text" && (nextPart.type === "text" || nextPart.type === "reasoning")) {
+                  markChatFirstToken(sessionID)
+                }
+                pendingDeltas.delete(key)
+              }
+
               const existing = parts[part.messageID] ?? []
-              const idx = existing.findIndex((candidate) => candidate.id === part.id)
+              const idx = existing.findIndex((candidate) => candidate.id === nextPart.id)
               if (idx >= 0) {
                 const next = [...existing]
-                next[idx] = part
-                parts[part.messageID] = next
-                hydrated[part.messageID] = isHydratedParts(next)
+                next[idx] = nextPart
+                parts[nextPart.messageID] = next
+                hydrated[nextPart.messageID] = isHydratedParts(next)
               } else {
-                const next = [...existing, part]
-                parts[part.messageID] = next
-                hydrated[part.messageID] = isHydratedParts(next)
+                const next = [...existing, nextPart]
+                parts[nextPart.messageID] = next
+                hydrated[nextPart.messageID] = isHydratedParts(next)
               }
               loadedAt[sessionID] = Date.now()
+              changed = true
+              break
+            }
+
+            case "message.part.delta": {
+              const { sessionID, messageID, partID, field, delta } = event.properties
+              if (!delta) break
+
+              const existing = parts[messageID] ?? []
+              const idx = existing.findIndex((part) => part.id === partID)
+
+              if (idx < 0) {
+                const key = deltaBufferKey(messageID, partID, field)
+                pendingDeltas.set(key, (pendingDeltas.get(key) ?? "") + delta)
+                if (pendingDeltas.size > MAX_PENDING_DELTA_ENTRIES) {
+                  // Keep map bounded in pathological out-of-order streams.
+                  for (const pendingKey of pendingDeltas.keys()) {
+                    pendingDeltas.delete(pendingKey)
+                    if (pendingDeltas.size <= PENDING_DELTA_TRIM_TARGET) break
+                  }
+                }
+                markStreamLateDelta(sessionID, messageID, partID, field)
+                break
+              }
+
+              const currentPart = existing[idx]
+              const nextPart = appendPartDelta(currentPart, field, delta)
+              if (nextPart === currentPart) break
+
+              touchedSessions.add(sessionID)
+              touchedForPersist.add(sessionID)
+              const next = [...existing]
+              next[idx] = nextPart
+              parts[messageID] = next
+              hydrated[messageID] = isHydratedParts(next)
+              loadedAt[sessionID] = Date.now()
+              if (field === "text" && (nextPart.type === "text" || nextPart.type === "reasoning")) {
+                markChatFirstToken(sessionID)
+              }
               changed = true
               break
             }
@@ -747,13 +907,20 @@ export const useMessages = createStore<MessageState>((set, get) => {
             case "message.part.removed": {
               const sessionID = event.properties.sessionID
               const messageID = event.properties.messageID
+              const partID = event.properties.partID
               touchedSessions.add(sessionID)
               touchedForPersist.add(sessionID)
 
               const existing = parts[messageID] ?? []
-              const next = existing.filter((part) => part.id !== event.properties.partID)
+              const next = existing.filter((part) => part.id !== partID)
               parts[messageID] = next
               hydrated[messageID] = isHydratedParts(next)
+              const removedPrefix = `${messageID}:${partID}:`
+              for (const key of pendingDeltas.keys()) {
+                if (key.startsWith(removedPrefix)) {
+                  pendingDeltas.delete(key)
+                }
+              }
               loadedAt[sessionID] = Date.now()
               changed = true
               break

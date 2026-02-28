@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { View, StyleSheet, useWindowDimensions, Platform, type ViewProps } from "react-native"
 import { Stack, useRouter } from "expo-router"
-import { BlurView } from "expo-blur"
 import { Drawer, useDrawerProgress } from "react-native-drawer-layout"
 import Animated, { interpolate, useAnimatedStyle } from "react-native-reanimated"
 import type { Session } from "@opencode-ai/sdk/client"
@@ -12,9 +11,9 @@ import { useSessions } from "../../src/store/sessions"
 import { useMessages } from "../../src/store/messages"
 import { useConnection } from "../../src/store/connection"
 import { useSidebar } from "../../src/store/sidebar"
+import { addCrashBreadcrumb } from "../../src/perf/crash-breadcrumbs"
 
 const AnimatedView = Animated.View as React.ComponentType<ViewProps & { style?: unknown; children?: React.ReactNode }>
-const SWIPE_SURFACE_BLUR_INTENSITY = 80
 const SWIPE_SURFACE_OVERLAY_OPACITY = 0.14
 const DRAWER_SWIPE_MIN_DISTANCE = 12
 const DRAWER_SWIPE_MIN_VELOCITY = 220
@@ -24,9 +23,10 @@ export default function MainLayout() {
   const { width } = useWindowDimensions()
   const isTablet = width >= 768
   const [open, setOpen] = useState(isTablet)
+  const drawerGestureActiveRef = useRef(false)
+  const blockSessionSelectUntilRef = useRef(0)
+  const currentSessionID = useSessions((s) => s.current)
   const select = useSessions((s) => s.select)
-  const loadMessages = useMessages((s) => s.load)
-  const prefetchMessages = useMessages((s) => s.prefetch)
   const directory = useConnection((s) => s.directory)
   const switchDirectory = useConnection((s) => s.switchDirectory)
   const openSignal = useSidebar((s) => s.openSignal)
@@ -38,6 +38,15 @@ export default function MainLayout() {
   const setOpenIfChanged = useCallback((next: boolean) => {
     setOpen((current) => (current === next ? current : next))
   }, [])
+  const sidebarVisible = isTablet || open
+
+  const blockSessionSelect = useCallback((durationMs: number) => {
+    blockSessionSelectUntilRef.current = Date.now() + durationMs
+  }, [])
+
+  const canSelectSession = useCallback(() => {
+    return Date.now() >= blockSessionSelectUntilRef.current
+  }, [])
 
   useEffect(() => {
     if (!openSignal || isTablet) return
@@ -46,24 +55,35 @@ export default function MainLayout() {
 
   const onSelectSession = useCallback(
     async (session: Session) => {
+      if (session.id === currentSessionID) {
+        addCrashBreadcrumb("session-switch:ignored-same-session", { sessionID: session.id })
+        if (!isTablet) setOpenIfChanged(false)
+        return
+      }
+      addCrashBreadcrumb("session-switch:start", {
+        sessionID: session.id,
+        toDirectory: session.directory,
+        currentDirectory: directory,
+      })
       if (session.directory && session.directory !== directory) {
+        addCrashBreadcrumb("session-switch:directory-switch:start", {
+          sessionID: session.id,
+          toDirectory: session.directory,
+        })
         await switchDirectory(session.directory)
+        addCrashBreadcrumb("session-switch:directory-switch:done", {
+          sessionID: session.id,
+          toDirectory: session.directory,
+        })
       }
       select(session.id)
-      // Warm only the first chat page before navigation.
-      void loadMessages(session.id, { limit: 60, compact: true })
-
-      const likelyNext = useSessions
-        .getState()
-        .sessions.filter((candidate) => candidate.directory === session.directory && candidate.id !== session.id)
-        .slice(0, 2)
-        .map((candidate) => candidate.id)
-      void prefetchMessages(likelyNext, { limit: 20 })
+      addCrashBreadcrumb("session-switch:selected", { sessionID: session.id })
 
       if (!isTablet) setOpenIfChanged(false)
+      addCrashBreadcrumb("session-switch:navigate", { sessionID: session.id })
       router.replace(`/(main)/session/${session.id}`)
     },
-    [isTablet, router, select, loadMessages, prefetchMessages, setOpenIfChanged, directory, switchDirectory],
+    [currentSessionID, directory, isTablet, router, select, setOpenIfChanged, switchDirectory],
   )
 
   const onNewSession = useCallback(async (worktree?: string) => {
@@ -80,6 +100,12 @@ export default function MainLayout() {
     router.push("/(main)/settings")
   }, [isTablet, router, setOpenIfChanged])
 
+  const onServerSwitched = useCallback(() => {
+    if (isTablet) return
+    blockSessionSelect(160)
+    setOpenIfChanged(false)
+  }, [blockSessionSelect, isTablet, setOpenIfChanged])
+
   const drawerStyle = useMemo(
     () => ({
       width: isTablet ? 320 : width,
@@ -89,18 +115,43 @@ export default function MainLayout() {
   )
 
   const renderDrawerContent = useCallback(
-    () => <Sidebar onSelect={onSelectSession} onNew={onNewSession} onSettings={onSettings} />,
-    [onSelectSession, onNewSession, onSettings],
+    () => (
+      <Sidebar
+        onSelect={onSelectSession}
+        onNew={onNewSession}
+        onSettings={onSettings}
+        canSelectSession={canSelectSession}
+        sidebarVisible={sidebarVisible}
+        onServerSwitched={onServerSwitched}
+      />
+    ),
+    [canSelectSession, onNewSession, onSelectSession, onServerSwitched, onSettings, sidebarVisible],
   )
 
   return (
     <Drawer
       open={isTablet ? true : open}
       onOpen={() => {
+        drawerGestureActiveRef.current = false
+        blockSessionSelect(80)
         if (!isTablet) setOpenIfChanged(true)
       }}
       onClose={() => {
+        drawerGestureActiveRef.current = false
+        blockSessionSelect(120)
         if (!isTablet) setOpenIfChanged(false)
+      }}
+      onGestureStart={() => {
+        drawerGestureActiveRef.current = true
+        blockSessionSelect(220)
+      }}
+      onGestureCancel={() => {
+        drawerGestureActiveRef.current = false
+        blockSessionSelect(140)
+      }}
+      onGestureEnd={() => {
+        drawerGestureActiveRef.current = false
+        blockSessionSelect(180)
       }}
       drawerType={isTablet ? "permanent" : "slide"}
       swipeEnabled={!isTablet}
@@ -119,11 +170,10 @@ export default function MainLayout() {
 function SlidingContent({ isTablet }: { isTablet: boolean }) {
   const theme = useTheme()
   const progress = useDrawerProgress()
-  const tint = theme.colors.background === "#09090b" ? "dark" : "light"
 
   const blurOverlayStyle = useAnimatedStyle(
     () => ({
-      opacity: isTablet ? 0 : interpolate(progress.value, [0, 1], [0, 1]),
+      opacity: isTablet ? 0 : interpolate(progress.value, [0, 1], [0, SWIPE_SURFACE_OVERLAY_OPACITY]),
     }),
     [isTablet],
   )
@@ -149,13 +199,7 @@ function SlidingContent({ isTablet }: { isTablet: boolean }) {
       {!isTablet && Platform.OS === "ios" ? (
         <>
           <AnimatedView pointerEvents="none" style={[styles.mainBlurOverlay, blurOverlayStyle]}>
-            <BlurView intensity={SWIPE_SURFACE_BLUR_INTENSITY} tint={tint} style={StyleSheet.absoluteFill} />
-            <View
-              style={[
-                styles.mainBlurTint,
-                { backgroundColor: theme.colors.background, opacity: SWIPE_SURFACE_OVERLAY_OPACITY },
-              ]}
-            />
+            <View style={[styles.mainBlurTint, { backgroundColor: theme.colors.background }]} />
           </AnimatedView>
         </>
       ) : null}

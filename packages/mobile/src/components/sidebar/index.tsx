@@ -1,21 +1,19 @@
-import { useCallback, useMemo, memo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, memo, useRef, useState } from "react"
 import {
   View,
   Text,
   TextInput,
-  FlatList,
   Pressable,
   StyleSheet,
   RefreshControl,
   Alert,
-  Platform,
 } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
-import { BlurView } from "expo-blur"
 import { LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
 import * as ZeegoContextMenu from "zeego/context-menu"
 import * as Haptics from "expo-haptics"
 import * as Clipboard from "expo-clipboard"
+import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list"
 import type { Project, Session } from "@opencode-ai/sdk/client"
 import { useSessions } from "../../store/sessions"
 import { useConnection } from "../../store/connection"
@@ -23,6 +21,8 @@ import { useTheme } from "../../theme"
 import { relative } from "../../util/format"
 import { SessionListSkeleton } from "../skeleton"
 import { client } from "../../api/client"
+import { addCrashBreadcrumb } from "../../perf/crash-breadcrumbs"
+import { ServerSwitcher } from "./server-switcher"
 
 // React 19 JSX compat casts
 const MenuRoot = ZeegoContextMenu.Root as React.ComponentType<{
@@ -51,20 +51,35 @@ const Glass = LiquidGlassView as React.ComponentType<{
   style?: unknown
   children?: React.ReactNode
 }>
-const SWIPE_SURFACE_BLUR_INTENSITY = 80
-const SWIPE_SURFACE_OVERLAY_OPACITY = 0.14
+const SIDEBAR_DRAW_DISTANCE = 700
+const SESSION_RENDER_CHUNK = 20
+const SESSION_SELECT_DEBOUNCE_MS = 280
 
 type Props = {
   onSelect: (session: Session) => void | Promise<void>
   onNew: (worktree?: string) => void | Promise<void>
   onSettings: () => void
+  canSelectSession?: () => boolean
+  sidebarVisible: boolean
+  onServerSwitched?: () => void
 }
 
-type SectionItem =
-  | { type: "project"; project: Project; count: number; collapsed: boolean; active: boolean }
-  | { type: "session"; session: Session }
+type SectionItem = {
+  project: Project
+  sessions: Session[]
+  count: number
+  collapsed: boolean
+  active: boolean
+}
 
-export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Props) {
+export const Sidebar = memo(function Sidebar({
+  onSelect,
+  onNew,
+  onSettings,
+  canSelectSession,
+  sidebarVisible,
+  onServerSwitched,
+}: Props) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
   const projects = useSessions((s) => s.projects)
@@ -77,11 +92,13 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
   const directory = useConnection((s) => s.directory)
   const [query, setQuery] = useState("")
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const lastSelectAtRef = useRef(0)
 
   const filteredSessions = useMemo(() => {
-    if (!query.trim()) return sessions
+    const deduped = dedupeSessionsByID(sessions)
+    if (!query.trim()) return deduped
     const q = query.toLowerCase()
-    return sessions.filter((s) => {
+    return deduped.filter((s) => {
       const title = (s.title || "").toLowerCase()
       return title.includes(q) || s.directory.toLowerCase().includes(q)
     })
@@ -120,24 +137,22 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
       return bTime - aTime
     })
 
-    return orderedProjects.flatMap((project) => {
+    return orderedProjects.map((project) => {
       const sessions = grouped[project.worktree] ?? []
       const isCollapsed = collapsed[project.worktree] ?? false
-      const header: SectionItem = {
-        type: "project",
+      return {
         project,
+        sessions,
         count: sessions.length,
         collapsed: isCollapsed,
         active: project.worktree === directory,
       }
-      if (isCollapsed) return [header]
-      return [header, ...sessions.map((session) => ({ type: "session", session } as const))]
     })
   }, [filteredSessions, projectsWithFallback, directory, collapsed])
 
   const handleArchive = useCallback(
     (id: string) => {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
       archive(id)
     },
     [archive],
@@ -151,7 +166,7 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
           text: "Delete",
           style: "destructive",
           onPress: () => {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
+            void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
             deleteSession(id)
           },
         },
@@ -173,7 +188,7 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
         return
       }
       await Clipboard.setStringAsync(shareURL)
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
       Alert.alert("Share link copied", shareURL)
     } catch {
       Alert.alert("Share failed", "Could not generate a share link.")
@@ -181,7 +196,7 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
   }, [])
 
   const toggleProject = useCallback((worktree: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     setCollapsed((state) => ({ ...state, [worktree]: !(state[worktree] ?? false) }))
   }, [])
 
@@ -191,7 +206,7 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
   }, [projectsWithFallback, collapsed])
 
   const toggleAll = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     setCollapsed((state) => {
       const shouldCollapse = !projectsWithFallback.every((project) => state[project.worktree] ?? false)
       const next = { ...state }
@@ -204,38 +219,50 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
 
   const handleCreateSession = useCallback(
     (worktree?: string) => {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
       void onNew(worktree)
     },
     [onNew],
   )
 
   const renderItem = useCallback(
-    ({ item }: { item: SectionItem }) => {
-      if (item.type === "project") {
-        return <ProjectRow item={item} onToggle={toggleProject} onNew={handleCreateSession} />
-      }
+    ({ item }: ListRenderItemInfo<SectionItem>) => {
       return (
-        <View style={styles.sessionIndent}>
-          <SessionRow
-            session={item.session}
-            onSelect={onSelect}
-            onArchive={handleArchive}
-            onDelete={handleDelete}
-            onShare={handleShare}
-          />
-        </View>
+        <ProjectSection
+          item={item}
+          onToggle={toggleProject}
+          onNew={handleCreateSession}
+          onSelect={(session) => {
+            const now = Date.now()
+            if (now - lastSelectAtRef.current < SESSION_SELECT_DEBOUNCE_MS) {
+              addCrashBreadcrumb(
+                "sidebar:select-debounced",
+                {
+                  sessionID: session.id,
+                  sinceLastMs: now - lastSelectAtRef.current,
+                },
+                "warn",
+              )
+              return
+            }
+            lastSelectAtRef.current = now
+            void onSelect(session)
+          }}
+          onArchive={handleArchive}
+          onDelete={handleDelete}
+          onShare={handleShare}
+          canSelectSession={canSelectSession}
+        />
       )
     },
-    [handleArchive, handleDelete, handleShare, onSelect, toggleProject, handleCreateSession],
+    [handleArchive, handleDelete, handleShare, onSelect, canSelectSession, toggleProject, handleCreateSession],
   )
 
   const keyExtractor = useCallback((item: SectionItem) => {
-    if (item.type === "project") return `project-${item.project.id}-${item.project.worktree}`
-    return item.session.id
+    return `project-${item.project.id}-${item.project.worktree}`
   }, [])
 
-  const tint = theme.colors.background === "#09090b" ? "dark" : "light"
+  const getItemType = useCallback(() => "project", [])
 
   const content = (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -292,24 +319,24 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
         </View>
       )}
 
+      <ServerSwitcher sidebarVisible={sidebarVisible} onServerSwitched={onServerSwitched} />
+
       {loading && sessions.length === 0 ? (
         <SessionListSkeleton />
       ) : (
-        <FlatList
+        <FlashList
           data={items}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
+          getItemType={getItemType}
           style={styles.list}
           contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 16 }]}
           refreshControl={
             <RefreshControl refreshing={loading} onRefresh={handleRefresh} tintColor={theme.colors.textTertiary} />
           }
           showsVerticalScrollIndicator={false}
-          initialNumToRender={16}
-          windowSize={7}
-          maxToRenderPerBatch={10}
-          updateCellsBatchingPeriod={16}
-          removeClippedSubviews={false}
+          drawDistance={SIDEBAR_DRAW_DISTANCE}
+          removeClippedSubviews
           ListEmptyComponent={
             <Text style={[styles.emptyText, { color: theme.colors.textTertiary }]}>No sessions found.</Text>
           }
@@ -318,33 +345,26 @@ export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings }: Pr
     </View>
   )
 
-  return (
-    <View style={[styles.surface, { backgroundColor: theme.colors.background }]}>
-      {Platform.OS === "ios" ? (
-        <View style={styles.blur}>
-          <BlurView intensity={SWIPE_SURFACE_BLUR_INTENSITY} tint={tint} style={StyleSheet.absoluteFill} />
-          <View
-            pointerEvents="none"
-            style={[
-              styles.overlay,
-              { backgroundColor: theme.colors.background, opacity: SWIPE_SURFACE_OVERLAY_OPACITY },
-            ]}
-          />
-          {content}
-        </View>
-      ) : (
-        <View style={[styles.fallbackSurface, { backgroundColor: theme.colors.background }]}>{content}</View>
-      )}
-    </View>
-  )
+  return <View style={[styles.surface, { backgroundColor: theme.colors.background }]}>{content}</View>
 })
+
+function dedupeSessionsByID(list: Session[]): Session[] {
+  const deduped: Session[] = []
+  const seen = new Set<string>()
+  for (const session of list) {
+    if (seen.has(session.id)) continue
+    seen.add(session.id)
+    deduped.push(session)
+  }
+  return deduped
+}
 
 const ProjectRow = memo(function ProjectRow({
   item,
   onToggle,
   onNew,
 }: {
-  item: Extract<SectionItem, { type: "project" }>
+  item: SectionItem
   onToggle: (worktree: string) => void
   onNew: (worktree: string) => void
 }) {
@@ -393,76 +413,126 @@ const ProjectRow = memo(function ProjectRow({
   )
 })
 
+const ProjectSection = memo(function ProjectSection({
+  item,
+  onToggle,
+  onNew,
+  onSelect,
+  onArchive,
+  onDelete,
+  onShare,
+  canSelectSession,
+}: {
+  item: SectionItem
+  onToggle: (worktree: string) => void
+  onNew: (worktree: string) => void
+  onSelect: (session: Session) => void | Promise<void>
+  onArchive: (id: string) => void
+  onDelete: (id: string) => void
+  onShare: (id: string) => void
+  canSelectSession?: () => boolean
+}) {
+  const theme = useTheme()
+  const [visibleCount, setVisibleCount] = useState(SESSION_RENDER_CHUNK)
+  const visibleSessions = useMemo(
+    () => item.sessions.slice(0, Math.max(SESSION_RENDER_CHUNK, visibleCount)),
+    [item.sessions, visibleCount],
+  )
+  const remainingCount = Math.max(0, item.sessions.length - visibleSessions.length)
+
+  useEffect(() => {
+    setVisibleCount(SESSION_RENDER_CHUNK)
+  }, [item.project.worktree, item.sessions.length])
+
+  return (
+    <View style={styles.projectSection}>
+      <ProjectRow item={item} onToggle={onToggle} onNew={onNew} />
+      {!item.collapsed && item.sessions.length > 0 ? (
+        <View style={[styles.sessionGroup, { borderLeftColor: theme.colors.borderSubtle }]}>
+          {visibleSessions.map((session, index) => (
+            <View key={session.id} style={[styles.sessionSlot, index === visibleSessions.length - 1 && styles.sessionSlotLast]}>
+              <SessionRow
+                session={session}
+                onSelect={onSelect}
+                onArchive={onArchive}
+                onDelete={onDelete}
+                onShare={onShare}
+                canSelectSession={canSelectSession}
+              />
+            </View>
+          ))}
+          {remainingCount > 0 ? (
+            <Pressable
+              style={({ pressed }) => [
+                styles.loadMoreSessionsButton,
+                { borderColor: theme.colors.border, backgroundColor: theme.colors.surface },
+                pressed && styles.headerIconButtonPressed,
+              ]}
+              onPress={() => setVisibleCount((count) => count + SESSION_RENDER_CHUNK)}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel="Load more sessions"
+            >
+              <Text style={[styles.loadMoreSessionsText, { color: theme.colors.textSecondary }]}>
+                Show {Math.min(remainingCount, SESSION_RENDER_CHUNK)} more ({remainingCount} remaining)
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  )
+})
+
 const SessionRow = memo(function SessionRow({
   session,
   onSelect,
   onArchive,
   onDelete,
   onShare,
+  canSelectSession,
 }: {
   session: Session
   onSelect: (session: Session) => void | Promise<void>
   onArchive: (id: string) => void
   onDelete: (id: string) => void
   onShare: (id: string) => void
+  canSelectSession?: () => boolean
 }) {
   const theme = useTheme()
   const selected = useSessions((s) => s.current === session.id)
-  const touchRef = useRef<{ x: number; y: number; t: number } | null>(null)
-  const movedRef = useRef(false)
 
   const handleMenuOpen = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
-  }, [])
-
-  const handlePressIn = useCallback((e: { nativeEvent: { pageX: number; pageY: number } }) => {
-    touchRef.current = {
-      x: e.nativeEvent.pageX,
-      y: e.nativeEvent.pageY,
-      t: Date.now(),
-    }
-    movedRef.current = false
-  }, [])
-
-  const handlePressMove = useCallback((e: { nativeEvent: { pageX: number; pageY: number } }) => {
-    const touch = touchRef.current
-    if (!touch) return
-    if (movedRef.current) return
-    const dx = Math.abs(e.nativeEvent.pageX - touch.x)
-    const dy = Math.abs(e.nativeEvent.pageY - touch.y)
-    if (dx > 8 || dy > 8) movedRef.current = true
-  }, [])
-
-  const handlePressOut = useCallback((e: { nativeEvent: { pageX: number; pageY: number } }) => {
-    const touch = touchRef.current
-    if (!touch) return
-    const dx = Math.abs(e.nativeEvent.pageX - touch.x)
-    const dy = Math.abs(e.nativeEvent.pageY - touch.y)
-    if (dx > 8 || dy > 8) movedRef.current = true
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
   }, [])
 
   const handleSelect = useCallback(() => {
-    const touch = touchRef.current
-    if (!touch) return
-    if (movedRef.current) return
-    if (Date.now() - touch.t > 500) return
+    if (canSelectSession && !canSelectSession()) {
+      addCrashBreadcrumb(
+        "sidebar:select-blocked",
+        {
+          sessionID: session.id,
+          sessionTitle: session.title || "Untitled session",
+        },
+        "warn",
+      )
+      return
+    }
     void onSelect(session)
-  }, [onSelect, session])
+  }, [onSelect, session, canSelectSession])
 
   const rowBody = (
     <Pressable
-      style={[
+      style={({ pressed }) => [
         styles.sessionRow,
         {
           backgroundColor: selected ? theme.colors.surfaceRaised : "transparent",
           borderRadius: theme.radii.md,
+          opacity: pressed ? 0.72 : 1,
         },
       ]}
-      onPressIn={handlePressIn}
-      onTouchMove={handlePressMove}
-      onPressOut={handlePressOut}
       onPress={handleSelect}
-      delayLongPress={280}
+      hitSlop={6}
     >
       <View style={styles.sessionMain}>
         <Text style={[styles.sessionTitle, { color: theme.colors.text }]} numberOfLines={1}>
@@ -610,15 +680,6 @@ const styles = StyleSheet.create({
   surface: {
     flex: 1,
   },
-  blur: {
-    flex: 1,
-  },
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  fallbackSurface: {
-    flex: 1,
-  },
   container: {
     flex: 1,
   },
@@ -690,8 +751,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   listContent: {
-    paddingHorizontal: 10,
-    gap: 4,
+    paddingHorizontal: 12,
+  },
+  projectSection: {
+    marginTop: 10,
   },
   projectRow: {
     flexDirection: "row",
@@ -699,8 +762,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    marginTop: 8,
-    marginBottom: 2,
+    marginTop: 0,
+    marginBottom: 0,
     gap: 8,
   },
   projectMain: {
@@ -742,33 +805,60 @@ const styles = StyleSheet.create({
   sessionRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingLeft: 8,
-    paddingRight: 8,
-    paddingVertical: 11,
+    minHeight: 54,
+    paddingLeft: 12,
+    paddingRight: 10,
+    paddingVertical: 6,
     gap: 8,
   },
-  sessionIndent: {
-    paddingLeft: 34,
+  sessionGroup: {
+    marginLeft: 22,
+    marginTop: 8,
+    paddingLeft: 12,
     paddingRight: 4,
-    paddingTop: 2,
-    paddingBottom: 6,
+    paddingBottom: 8,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+  },
+  sessionSlot: {
+    borderRadius: 12,
+  },
+  sessionSlotLast: {
+    marginBottom: 2,
   },
   sessionMain: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 14,
   },
   sessionTitle: {
     flex: 1,
-    fontSize: 15,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 22,
     fontWeight: "500",
   },
   sessionMeta: {
+    fontSize: 13,
+    lineHeight: 17,
+    minWidth: 66,
+    textAlign: "right",
+    flexShrink: 0,
+  },
+  loadMoreSessionsButton: {
+    marginTop: 2,
+    marginRight: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    minHeight: 34,
+    justifyContent: "center",
+    paddingHorizontal: 10,
+  },
+  loadMoreSessionsText: {
     fontSize: 12,
     lineHeight: 16,
-    flexShrink: 0,
+    fontWeight: "500",
+    textAlign: "center",
   },
   emptyText: {
     paddingHorizontal: 18,

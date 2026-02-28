@@ -26,8 +26,8 @@ import { MarkdownRenderer } from "../markdown/renderer"
 type SubtaskPart = Extract<Part, { type: "subtask" }>
 type CompactionPart = Extract<Part, { type: "compaction" }>
 
-const AnimatedView = Animated.View as any
-const AnimatedText = Animated.Text as any
+const AnimatedView: any = Animated.View
+const AnimatedText: any = Animated.Text
 const COLLAPSIBLE_LAYOUT = LinearTransition.springify().damping(22).stiffness(260).mass(0.7)
 const COLLAPSIBLE_ENTER = FadeIn.duration(140).easing(Easing.out(Easing.cubic))
 const COLLAPSIBLE_EXIT = FadeOut.duration(110).easing(Easing.in(Easing.cubic))
@@ -35,15 +35,16 @@ const COLLAPSIBLE_EXIT = FadeOut.duration(110).easing(Easing.in(Easing.cubic))
 type Props = {
   part: Part
   isUser: boolean
+  isStreamingComplete?: boolean
   onHydrateMessage?: (messageID: string) => void
 }
 
-export const PartRenderer = memo(function PartRenderer({ part, isUser, onHydrateMessage }: Props) {
+export const PartRenderer = memo(function PartRenderer({ part, isUser, isStreamingComplete = true, onHydrateMessage }: Props) {
   switch (part.type) {
     case "text":
-      return <TextPartView part={part} isUser={isUser} />
+      return <TextPartView part={part} isUser={isUser} isStreamingComplete={isStreamingComplete} />
     case "reasoning":
-      return <ReasoningPartView part={part} />
+      return <ReasoningPartView part={part} isStreamingComplete={isStreamingComplete} />
     case "tool":
       return <ToolPartView part={part} onHydrateMessage={onHydrateMessage} />
     case "file":
@@ -69,7 +70,7 @@ export const PartRenderer = memo(function PartRenderer({ part, isUser, onHydrate
   }
 })
 
-function TextPartView({ part, isUser }: { part: TextPart; isUser: boolean }) {
+function TextPartView({ part, isUser, isStreamingComplete }: { part: TextPart; isUser: boolean; isStreamingComplete: boolean }) {
   const theme = useTheme()
   if (!part.text) return null
 
@@ -77,10 +78,10 @@ function TextPartView({ part, isUser }: { part: TextPart; isUser: boolean }) {
     return <Text style={[styles.text, { color: theme.colors.userBubbleText }]}>{part.text}</Text>
   }
 
-  return <MarkdownRenderer>{part.text}</MarkdownRenderer>
+  return <MarkdownRenderer isComplete={isStreamingComplete}>{part.text}</MarkdownRenderer>
 }
 
-function ReasoningPartView({ part }: { part: ReasoningPart }) {
+function ReasoningPartView({ part, isStreamingComplete }: { part: ReasoningPart; isStreamingComplete: boolean }) {
   const theme = useTheme()
   const [expanded, setExpanded] = useState(false)
   const text = part.text?.trim()
@@ -107,7 +108,9 @@ function ReasoningPartView({ part }: { part: ReasoningPart }) {
           layout={COLLAPSIBLE_LAYOUT}
           style={styles.reasoningExpanded}
         >
-          <MarkdownRenderer variant="reasoning">{text}</MarkdownRenderer>
+          <MarkdownRenderer variant="reasoning" isComplete={isStreamingComplete}>
+            {text}
+          </MarkdownRenderer>
         </AnimatedView>
       ) : null}
     </AnimatedView>

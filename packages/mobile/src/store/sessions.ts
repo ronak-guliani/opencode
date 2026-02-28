@@ -2,6 +2,7 @@ import { create as createStore } from "zustand"
 import { createOpencodeClient } from "@opencode-ai/sdk/client"
 import type { Project, Session, SessionStatus } from "@opencode-ai/sdk/client"
 import { client, url, headers } from "../api/client"
+import { addCrashBreadcrumb } from "../perf/crash-breadcrumbs"
 
 function projectClient(worktree: string) {
   const base = headers()
@@ -61,6 +62,8 @@ export const useSessions = createStore<SessionState>((set, get) => ({
   select: (id) => set({ current: id }),
 
   fetch: async () => {
+    const startAt = Date.now()
+    addCrashBreadcrumb("sessions-fetch:start")
     set({ loading: true })
     try {
       const projectsResult = await client().project.list()
@@ -75,13 +78,34 @@ export const useSessions = createStore<SessionState>((set, get) => ({
         }),
       )
       const sorted = groups.flat().sort((a, b) => b.time.updated - a.time.updated)
-      set({ projects, sessions: sorted, loading: false })
+      const deduped: Session[] = []
+      const seen = new Set<string>()
+      for (const session of sorted) {
+        if (seen.has(session.id)) continue
+        seen.add(session.id)
+        deduped.push(session)
+      }
+      set({ projects, sessions: deduped, loading: false })
+      addCrashBreadcrumb("sessions-fetch:done", {
+        projects: projects.length,
+        sessions: deduped.length,
+        elapsedMs: Date.now() - startAt,
+      })
     } catch {
       set({ loading: false })
+      addCrashBreadcrumb(
+        "sessions-fetch:error",
+        {
+          elapsedMs: Date.now() - startAt,
+        },
+        "warn",
+      )
     }
   },
 
   fetchStatuses: async () => {
+    const startAt = Date.now()
+    addCrashBreadcrumb("sessions-status:start")
     try {
       const projects = get().projects.length ? get().projects : ((await client().project.list()).data ?? [])
       const statuses = await Promise.all(
@@ -98,8 +122,20 @@ export const useSessions = createStore<SessionState>((set, get) => ({
         return { ...acc, ...item }
       }, {})
       set({ statuses: merged })
+      addCrashBreadcrumb("sessions-status:done", {
+        projects: projects.length,
+        statuses: Object.keys(merged).length,
+        elapsedMs: Date.now() - startAt,
+      })
     } catch {
       // ignore
+      addCrashBreadcrumb(
+        "sessions-status:error",
+        {
+          elapsedMs: Date.now() - startAt,
+        },
+        "warn",
+      )
     }
   },
 

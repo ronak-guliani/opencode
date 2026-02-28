@@ -8,12 +8,15 @@ import { useMessages } from "./messages"
 import { useRequests } from "./requests"
 import { useSessions } from "./sessions"
 import { useSettings } from "./settings"
+import { useDiffs } from "./diffs"
 import { normalizeServerUrl } from "../util/server"
+import { checkServerHealth, type CheckServerHealthOptions, type ServerHealth } from "../util/server-health"
 
 type Status = "disconnected" | "connecting" | "connected" | "error"
 type StreamStatus = "connected" | "reconnecting" | "disconnected"
 
 type ServerAuth = { username: string; password: string }
+type ProbeServerOptions = Pick<CheckServerHealthOptions, "timeoutMs" | "retryCount" | "retryDelayMs" | "signal">
 
 export type SavedServer = {
   url: string
@@ -41,6 +44,8 @@ type ConnectionState = {
   switchDirectory: (directory: string) => Promise<void>
   saveServer: (url: string, auth?: ServerAuth) => Promise<void>
   removeServer: (url: string) => Promise<RemoveServerResult>
+  probeServer: (url: string, opts?: ProbeServerOptions) => Promise<ServerHealth>
+  probeServers: (urls?: string[], opts?: ProbeServerOptions) => Promise<Record<string, ServerHealth>>
   connect: (url: string, auth?: ServerAuth) => Promise<void>
   disconnect: () => void
   restore: () => Promise<boolean>
@@ -68,6 +73,11 @@ function parseAuth(raw: string | null) {
   } catch {
     return
   }
+}
+
+function authHeader(auth?: ServerAuth) {
+  if (!auth?.username.trim()) return
+  return `Basic ${btoa(`${auth.username}:${auth.password}`)}`
 }
 
 function sortServers(list: SavedServer[]) {
@@ -177,7 +187,10 @@ async function readServerAuth(url: string) {
 }
 
 async function writeServerAuth(url: string, auth?: ServerAuth) {
-  if (!auth?.username.trim()) return
+  if (!auth?.username.trim()) {
+    await SecureStore.deleteItemAsync(serverAuthKey(url))
+    return
+  }
   await SecureStore.setItemAsync(serverAuthKey(url), JSON.stringify(auth))
 }
 
@@ -185,6 +198,7 @@ function resetServerScopedState() {
   useSessions.getState().reset()
   useMessages.getState().reset()
   useRequests.getState().reset()
+  useDiffs.getState().reset()
   useSettings.getState().resetRemote()
 }
 
@@ -287,9 +301,39 @@ export const useConnection = createStore<ConnectionState>((set, get) => ({
     set({ servers: next })
 
     await writeServers(next)
-
-    if (!auth) return
     await writeServerAuth(normalized, auth)
+  },
+
+  probeServer: async (rawUrl, opts) => {
+    const normalized = normalizeServerUrl(rawUrl)
+    if (!normalized) return { healthy: false }
+
+    const savedAuth = await readServerAuth(normalized)
+    const authorization = authHeader(savedAuth)
+    return checkServerHealth(normalized, {
+      timeoutMs: opts?.timeoutMs,
+      retryCount: opts?.retryCount,
+      retryDelayMs: opts?.retryDelayMs,
+      signal: opts?.signal,
+      headers: authorization ? { Authorization: authorization } : undefined,
+    })
+  },
+
+  probeServers: async (urls, opts) => {
+    const list = (urls?.length ? urls : get().servers.map((server) => server.url))
+      .map((item) => normalizeServerUrl(item))
+      .filter((item): item is string => !!item)
+
+    const unique: string[] = []
+    const seen = new Set<string>()
+    for (const item of list) {
+      if (seen.has(item)) continue
+      seen.add(item)
+      unique.push(item)
+    }
+
+    const entries = await Promise.all(unique.map(async (url) => [url, await get().probeServer(url, opts)] as const))
+    return Object.fromEntries(entries)
   },
 
   removeServer: async (rawUrl) => {
@@ -330,17 +374,14 @@ export const useConnection = createStore<ConnectionState>((set, get) => ({
 
       const savedAuth = await readServerAuth(normalized)
       const resolvedAuth = auth?.username ? auth : savedAuth
-      const authHeader = resolvedAuth ? `Basic ${btoa(`${resolvedAuth.username}:${resolvedAuth.password}`)}` : undefined
+      const authorization = authHeader(resolvedAuth)
 
-      const health = await fetch(`${normalized}/global/health`, {
-        headers: authHeader ? { Authorization: authHeader } : undefined,
+      const health = await checkServerHealth(normalized, {
+        headers: authorization ? { Authorization: authorization } : undefined,
       })
-      if (!health.ok) throw new Error(`Health check failed (${health.status})`)
+      if (!health.healthy) throw new Error("Server is offline or unhealthy")
 
-      const healthData = (await health.json()) as { healthy?: boolean; version?: string }
-      if (!healthData?.healthy) throw new Error("Server is not healthy")
-
-      const headers = resolvedAuth ? { Authorization: authHeader! } : undefined
+      const headers = authorization ? { Authorization: authorization } : undefined
       const temp = createOpencodeClient({
         baseUrl: normalized,
         headers,
@@ -370,7 +411,7 @@ export const useConnection = createStore<ConnectionState>((set, get) => ({
         url: normalized,
         status: "connected",
         directory,
-        serverVersion: healthData.version ?? null,
+        serverVersion: health.version ?? null,
         auth: resolvedAuth ?? null,
         error: null,
         stream: "disconnected",

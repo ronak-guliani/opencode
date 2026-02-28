@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react"
-import { View, TextInput, Pressable, Text, StyleSheet, Platform, Alert } from "react-native"
+import { View, TextInput, Pressable, Text, StyleSheet, Platform, Alert, type LayoutChangeEvent } from "react-native"
 import { KeyboardStickyView } from "react-native-keyboard-controller"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LiquidGlassContainerView, LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
@@ -27,11 +27,12 @@ export function Composer({ sessionId }: Props) {
   const [pickerAnchor, setPickerAnchor] = useState<{ x: number; y: number } | null>(null)
 
   const busy = status?.type === "busy"
+  const trimmedText = text.trim()
 
   const handleSend = useCallback(async () => {
     const content = text.trim()
-    if (!content || sending) return
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+    if (!content || sending || busy) return
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
     setText("")
     try {
       await send(sessionId, content)
@@ -43,15 +44,15 @@ export function Composer({ sessionId }: Props) {
       }
       Alert.alert("Message failed", "Something went wrong while sending.")
     }
-  }, [text, sending, sessionId, send])
+  }, [busy, text, sending, sessionId, send])
 
   const handleAbort = useCallback(() => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
     abort(sessionId)
   }, [sessionId, abort])
 
-  const handleLayout = useCallback((e: { nativeEvent: { layout: { height: number } } }) => {
-    setComposerH(e.nativeEvent.layout.height)
+  const handleLayout = useCallback((e: LayoutChangeEvent) => {
+    setComposerH(Math.round(e.nativeEvent.layout.height))
   }, [setComposerH])
 
   const Sticky = KeyboardStickyView as React.ComponentType<{
@@ -68,17 +69,17 @@ export function Composer({ sessionId }: Props) {
       style={[
         styles.sendButton,
         {
-          backgroundColor: text.trim() ? theme.colors.accent : theme.colors.surfaceRaised,
+          backgroundColor: trimmedText ? theme.colors.accent : theme.colors.surfaceRaised,
         },
       ]}
       onPress={handleSend}
-      disabled={!text.trim() || sending}
+      disabled={!trimmedText || sending}
     >
       <Text
         style={[
           styles.sendIcon,
           {
-            color: text.trim() ? theme.colors.accentText : theme.colors.textTertiary,
+            color: trimmedText ? theme.colors.accentText : theme.colors.textTertiary,
           },
         ]}
       >

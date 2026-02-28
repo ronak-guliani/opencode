@@ -18,7 +18,7 @@ import { useConnection } from "../../src/store/connection"
 import { useSettings } from "../../src/store/settings"
 import { client, headers as clientHeaders, url as clientUrl } from "../../src/api/client"
 import { bootstrap } from "../../src/api/bootstrap"
-import { normalizeServerUrl, serverDisplayName } from "../../src/util/server"
+import { serverDisplayName } from "../../src/util/server"
 
 type Method = { type: string; label: string }
 type Authorization = { url: string; method: "auto" | "code"; instructions: string }
@@ -86,7 +86,6 @@ export default function SettingsScreen() {
   const status = useConnection((s) => s.status)
   const serverVersion = useConnection((s) => s.serverVersion)
   const connect = useConnection((s) => s.connect)
-  const saveServer = useConnection((s) => s.saveServer)
   const removeServer = useConnection((s) => s.removeServer)
   const disconnect = useConnection((s) => s.disconnect)
 
@@ -108,11 +107,6 @@ export default function SettingsScreen() {
   const [providerError, setProviderError] = useState<string | null>(null)
   const [apiKey, setApiKey] = useState("")
   const [oauthCode, setOauthCode] = useState("")
-  const [addServerURL, setAddServerURL] = useState("")
-  const [addAuthEnabled, setAddAuthEnabled] = useState(false)
-  const [addUsername, setAddUsername] = useState("")
-  const [addPassword, setAddPassword] = useState("")
-  const [addingServer, setAddingServer] = useState(false)
 
   const connectedSet = useMemo(() => new Set(connected), [connected])
 
@@ -404,31 +398,6 @@ export default function SettingsScreen() {
     [connect, router],
   )
 
-  const handleAddServer = useCallback(async () => {
-    const normalized = normalizeServerUrl(addServerURL)
-    if (!normalized) {
-      setServerError("Server URL is invalid")
-      return
-    }
-
-    const auth = addAuthEnabled && addUsername.trim() ? { username: addUsername.trim(), password: addPassword } : undefined
-
-    setAddingServer(true)
-    setServerError(null)
-
-    try {
-      await saveServer(normalized, auth)
-      setAddServerURL("")
-      setAddAuthEnabled(false)
-      setAddUsername("")
-      setAddPassword("")
-    } catch (error) {
-      setServerError(errorMessage(error))
-    } finally {
-      setAddingServer(false)
-    }
-  }, [addAuthEnabled, addPassword, addServerURL, addUsername, saveServer])
-
   const handleRemoveServer = useCallback(
     async (targetUrl: string) => {
       setServerBusyAction("remove")
@@ -501,19 +470,10 @@ export default function SettingsScreen() {
                   <View style={styles.serverActions}>
                     {activeServerUrl === server.url && status === "connected" ? (
                       <Text style={[styles.providerActionMuted, { color: theme.colors.accent }]}>Connected</Text>
-                    ) : (
-                      <Pressable
-                        onPress={() => void connectToServer(server.url)}
-                        disabled={!!serverBusy || addingServer}
-                      >
-                        <Text style={[styles.providerAction, { color: theme.colors.accent }]}>
-                          {serverBusy === server.url && serverBusyAction === "connect" ? "Connecting..." : "Connect"}
-                        </Text>
-                      </Pressable>
-                    )}
+                    ) : null}
                     <Pressable
                       onPress={() => void handleRemoveServer(server.url)}
-                      disabled={!!serverBusy || addingServer}
+                      disabled={!!serverBusy}
                     >
                       <Text style={[styles.providerAction, { color: theme.colors.error }]}>
                         {serverBusy === server.url && serverBusyAction === "remove" ? "Removing..." : "Remove"}
@@ -524,89 +484,6 @@ export default function SettingsScreen() {
               </View>
             ))
           )}
-        </View>
-
-        <Text style={[styles.sectionTitle, { color: theme.colors.textTertiary }]}>Add Server</Text>
-        <View style={[styles.serverFormCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-          <TextInput
-            style={[
-              styles.serverInput,
-              {
-                color: theme.colors.text,
-                borderColor: theme.colors.border,
-                backgroundColor: theme.colors.background,
-              },
-            ]}
-            value={addServerURL}
-            onChangeText={setAddServerURL}
-            placeholder="https://your-server.ngrok.io"
-            placeholderTextColor={theme.colors.textTertiary}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            editable={!addingServer && !serverBusy}
-            onSubmitEditing={() => void handleAddServer()}
-          />
-          <Pressable onPress={() => setAddAuthEnabled((value) => !value)} disabled={addingServer || !!serverBusy}>
-            <Text style={[styles.authToggleText, { color: theme.colors.accent }]}>
-              {addAuthEnabled ? "Hide authentication" : "Add authentication"}
-            </Text>
-          </Pressable>
-          {addAuthEnabled ? (
-            <View style={styles.authFields}>
-              <TextInput
-                style={[
-                  styles.serverInput,
-                  {
-                    color: theme.colors.text,
-                    borderColor: theme.colors.border,
-                    backgroundColor: theme.colors.background,
-                  },
-                ]}
-                value={addUsername}
-                onChangeText={setAddUsername}
-                placeholder="Username"
-                placeholderTextColor={theme.colors.textTertiary}
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!addingServer && !serverBusy}
-              />
-              <TextInput
-                style={[
-                  styles.serverInput,
-                  {
-                    color: theme.colors.text,
-                    borderColor: theme.colors.border,
-                    backgroundColor: theme.colors.background,
-                  },
-                ]}
-                value={addPassword}
-                onChangeText={setAddPassword}
-                placeholder="Password"
-                placeholderTextColor={theme.colors.textTertiary}
-                secureTextEntry
-                autoCapitalize="none"
-                editable={!addingServer && !serverBusy}
-              />
-            </View>
-          ) : null}
-          <Pressable
-            style={[
-              styles.serverPrimaryButton,
-              {
-                backgroundColor: theme.colors.accent,
-                opacity: addingServer || !!serverBusy || !addServerURL.trim() ? 0.6 : 1,
-              },
-            ]}
-            onPress={() => void handleAddServer()}
-            disabled={addingServer || !!serverBusy || !addServerURL.trim()}
-          >
-            {addingServer ? (
-              <ActivityIndicator color={theme.colors.accentText} />
-            ) : (
-              <Text style={[styles.serverPrimaryText, { color: theme.colors.accentText }]}>Save Server</Text>
-            )}
-          </Pressable>
         </View>
 
         {serverError ? <Text style={[styles.inlineError, { color: theme.colors.error }]}>{serverError}</Text> : null}

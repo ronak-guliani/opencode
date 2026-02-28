@@ -1,0 +1,122 @@
+diff --git a/dist/StreamdownRN.js b/dist/StreamdownRN.js
+index 4340f17..481148e 100644
+--- a/dist/StreamdownRN.js
++++ b/dist/StreamdownRN.js
+@@ -17,6 +17,12 @@ import { fixIncompleteMarkdown } from './core/incomplete';
+ import { getTheme } from './themes';
+ import { StableBlock } from './renderers/StableBlock';
+ import { ActiveBlock } from './renderers/ActiveBlock';
++const getNow = () => {
++    if (typeof globalThis !== 'undefined' && globalThis.performance && typeof globalThis.performance.now === 'function') {
++        return globalThis.performance.now();
++    }
++    return Date.now();
++};
+ /**
+  * StreamdownRN Component
+  *
+@@ -35,7 +41,7 @@ export const StreamdownRN = React.memo(({ children, componentRegistry, theme = '
+     // Track content for change detection (important for FlashList recycling!)
+     const contentRef = useRef('');
+     // Debug tracking refs
+-    const lastUpdateTimeRef = useRef(performance.now());
++    const lastUpdateTimeRef = useRef(getNow());
+     const previousContentRef = useRef('');
+     // Resolve theme configuration
+     const themeConfig = useMemo(() => {
+@@ -84,7 +90,7 @@ export const StreamdownRN = React.memo(({ children, componentRegistry, theme = '
+     useEffect(() => {
+         if (!onDebug || !children)
+             return;
+-        const now = performance.now();
++        const now = getNow();
+         const deltaMs = now - lastUpdateTimeRef.current;
+         const previousContent = previousContentRef.current;
+         const newChars = children.slice(previousContent.length);
+diff --git a/dist/renderers/ASTRenderer.js b/dist/renderers/ASTRenderer.js
+index 90c835b..00e21fe 100644
+--- a/dist/renderers/ASTRenderer.js
++++ b/dist/renderers/ASTRenderer.js
+@@ -11,7 +11,7 @@
+  * - Syntax highlighting for code blocks
+  */
+ import React, { useState, useEffect } from 'react';
+-import { Text, View, ScrollView, Image, Platform } from 'react-native';
++import { Text, View, ScrollView, Image, Platform, Linking } from 'react-native';
+ import SyntaxHighlighter from 'react-native-syntax-highlighter';
+ import { getTextStyles, getBlockStyles } from '../themes';
+ import { extractComponentData } from '../core/componentParser';
+@@ -161,7 +161,11 @@ function renderNode(node, theme, componentRegistry, isStreaming = false, key) {
+             {renderChildren(node, theme, componentRegistry, isStreaming)}
+           </Text>);
+             }
+-            return (<Text key={key} style={styles.link} accessibilityRole="link">
++            return (<Text key={key} style={styles.link} accessibilityRole="link" onPress={() => {
++                    Linking.openURL(safeUrl).catch(() => {
++                        // Ignore malformed model URLs to keep rendering stable.
++                    });
++                }}>
+           {renderChildren(node, theme, componentRegistry, isStreaming)}
+         </Text>);
+         }
+diff --git a/src/StreamdownRN.tsx b/src/StreamdownRN.tsx
+index e15133d..4da5ea2 100644
+--- a/src/StreamdownRN.tsx
++++ b/src/StreamdownRN.tsx
+@@ -26,6 +26,13 @@ import { getTheme } from './themes';
+ import { StableBlock } from './renderers/StableBlock';
+ import { ActiveBlock } from './renderers/ActiveBlock';
+ 
++const getNow = () => {
++  if (typeof globalThis !== 'undefined' && globalThis.performance && typeof globalThis.performance.now === 'function') {
++    return globalThis.performance.now();
++  }
++  return Date.now();
++};
++
+ /**
+  * StreamdownRN Component
+  * 
+@@ -54,7 +61,7 @@ export const StreamdownRN: React.FC<StreamdownRNProps> = React.memo(({
+   const contentRef = useRef<string>('');
+ 
+   // Debug tracking refs
+-  const lastUpdateTimeRef = useRef<number>(performance.now());
++  const lastUpdateTimeRef = useRef<number>(getNow());
+   const previousContentRef = useRef<string>('');
+ 
+   // Resolve theme configuration
+@@ -111,7 +118,7 @@ export const StreamdownRN: React.FC<StreamdownRNProps> = React.memo(({
+   useEffect(() => {
+     if (!onDebug || !children) return;
+     
+-    const now = performance.now();
++    const now = getNow();
+     const deltaMs = now - lastUpdateTimeRef.current;
+     const previousContent = previousContentRef.current;
+     const newChars = children.slice(previousContent.length);
+diff --git a/src/renderers/ASTRenderer.tsx b/src/renderers/ASTRenderer.tsx
+index dc6b4be..150e0b1 100644
+--- a/src/renderers/ASTRenderer.tsx
++++ b/src/renderers/ASTRenderer.tsx
+@@ -12,7 +12,7 @@
+  */
+ 
+ import React, { ReactNode, useState, useEffect } from 'react';
+-import { Text, View, ScrollView, Image, Platform } from 'react-native';
++import { Text, View, ScrollView, Image, Platform, Linking } from 'react-native';
+ import SyntaxHighlighter from 'react-native-syntax-highlighter';
+ import type { Content, Parent, Table as TableNode, Code as CodeNode, List as ListNode, Image as ImageNode, Link as LinkNode } from 'mdast';
+ import type { ThemeConfig, ComponentRegistry, StableBlock } from '../core/types';
+@@ -242,6 +242,11 @@ function renderNode(
+           key={key}
+           style={styles.link}
+           accessibilityRole="link"
++          onPress={() => {
++            Linking.openURL(safeUrl).catch(() => {
++              // Ignore malformed model URLs to keep rendering stable.
++            });
++          }}
+         >
+           {renderChildren(node, theme, componentRegistry, isStreaming)}
+         </Text>

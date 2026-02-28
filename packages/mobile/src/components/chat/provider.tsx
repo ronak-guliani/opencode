@@ -22,9 +22,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const listRef = useRef<FlashListRef<Message>>(null)
 
   const setComposerH = useCallback((h: number) => {
-    composerHeight.value = h
-    setComposerHState(h)
-  }, [])
+    const next = Math.max(0, Math.round(h))
+    setComposerHState((current) => {
+      // Ignore tiny layout jitter during keyboard transitions to prevent list inset flicker.
+      if (Math.abs(current - next) <= 1) return current
+      composerHeight.value = next
+      return next
+    })
+  }, [composerHeight])
 
   return (
     <ChatContext.Provider

@@ -15,14 +15,26 @@ type TextDefaultsCarrier = {
   }
 }
 
+type GlobalWithFontDefaults = typeof globalThis & {
+  __OPENCODE_MOBILE_FONT_DEFAULTS_SET__?: boolean
+}
+
+function applyGlobalFontDefaults() {
+  const globalState = globalThis as GlobalWithFontDefaults
+  if (globalState.__OPENCODE_MOBILE_FONT_DEFAULTS_SET__) return
+  globalState.__OPENCODE_MOBILE_FONT_DEFAULTS_SET__ = true
+
+  TextWithDefaults.defaultProps = TextWithDefaults.defaultProps ?? {}
+  TextInputWithDefaults.defaultProps = TextInputWithDefaults.defaultProps ?? {}
+
+  TextWithDefaults.defaultProps.style = [{ fontFamily: "Geist" }, TextWithDefaults.defaultProps.style]
+  TextInputWithDefaults.defaultProps.style = [{ fontFamily: "Geist" }, TextInputWithDefaults.defaultProps.style]
+}
+
 const TextWithDefaults = Text as unknown as TextDefaultsCarrier
 const TextInputWithDefaults = TextInput as unknown as TextDefaultsCarrier
 
-TextWithDefaults.defaultProps = TextWithDefaults.defaultProps ?? {}
-TextInputWithDefaults.defaultProps = TextInputWithDefaults.defaultProps ?? {}
-
-TextWithDefaults.defaultProps.style = [{ fontFamily: "Geist" }, TextWithDefaults.defaultProps.style]
-TextInputWithDefaults.defaultProps.style = [{ fontFamily: "Geist" }, TextInputWithDefaults.defaultProps.style]
+applyGlobalFontDefaults()
 
 export default function RootLayout() {
   const [ready, setReady] = useState(false)

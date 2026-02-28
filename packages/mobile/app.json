@@ -15,7 +15,11 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "ai.opencode.mobile"
+      "bundleIdentifier": "ai.opencode.mobile",
+      "infoPlist": {
+        "CADisableMinimumFrameDurationOnPhone": true,
+        "UIDesignRequiresCompatibility": false
+      }
     },
     "android": {
       "adaptiveIcon": {

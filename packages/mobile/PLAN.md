@@ -7,6 +7,8 @@
 
 A React Native app built with Expo that connects to a running opencode server (locally or via reverse proxy like ngrok). It provides a fast, native mobile interface for viewing sessions, reading/sending messages, and managing settings.
 
+Core interaction goal: users can keep multiple sessions "live" at once and switch instantly between them, including sessions from the same project and different projects, without losing message context or in-progress chat flow.
+
 The app does **not** run opencode itself — it is a thin client that talks to an already-running opencode server over HTTP + SSE, using the existing `@opencode-ai/sdk` package (auto-generated from the server's OpenAPI spec via `@hey-api/openapi-ts` — same toolchain v0 uses).
 
 ---
@@ -115,11 +117,11 @@ packages/mobile/
 │   │   ├── sidebar/              # Drawer sidebar
 │   │   │   ├── index.tsx         # Sidebar container
 │   │   │   ├── header.tsx        # Project name + path header
-│   │   │   ├── session-item.tsx  # Session row (swipe-to-archive)
-│   │   │   └── session-group.tsx # Date-grouped session list
+│   │   │   ├── session-item.tsx  # Session row (tap select + long-press actions)
+│   │   │   └── session-group.tsx # Project-grouped session list
 │   │   ├── glass.tsx             # Liquid Glass wrapper (LiquidGlassView)
 │   │   ├── skeleton.tsx          # Loading skeleton
-│   │   └── status.tsx            # Status indicator (idle/busy/retry)
+│   │   └── status.tsx            # Shared status indicator primitives
 │   ├── store/                    # Zustand stores
 │   │   ├── connection.ts         # Server URL, auth, connection state
 │   │   ├── sessions.ts           # Sessions list, current session, statuses
@@ -187,6 +189,8 @@ After bootstrap, open a persistent connection to `GET /event` (or `GET /global/e
 3. **Batched** — flushed at ~16ms intervals (frame-aligned, same as the web app and v0)
 4. **Applied** via a reducer that uses binary search for O(log n) inserts into sorted arrays
 
+For true multi-session mode, events must be routed by `{ directory, sessionID }` so background sessions (same project or other projects) continue receiving updates while another chat is in the foreground.
+
 ### 4. Sending a Message
 
 ```
@@ -213,9 +217,10 @@ Root Layout (_layout.tsx)
     └── Drawer Layout
         ├── Sidebar (left drawer)
         │   ├── Project Header (name + path)
-        │   ├── Session List (LegendList, grouped by date)
+        │   ├── Session List (LegendList, grouped by project/worktree)
         │   └── Settings button (bottom)
         └── Main Content
+            ├── Session Workspace (quick switch between active sessions)
             ├── Session Chat View (messages + composer)
             └── Settings (presented as formSheet modal)
 ```
@@ -316,21 +321,22 @@ function MessagesList({ messages }) {
 │  opencode               │  ← project name (bold, large)
 │  ~/code/opencode        │  ← directory path (muted, smaller)
 ├─────────────────────────┤
-│  Today                  │
-│   ● Fix type errors     │  ← session title, ● = status dot
-│   ● Add dark mode       │
-│  Yesterday              │
-│   ○ Refactor auth       │  ○ = idle
-│   ○ Update docs         │
+│  Projects               │
+│   opencode              │
+│    Fix type errors      │
+│    Add dark mode        │
+│   website               │
+│    Refactor auth        │
+│    Update docs          │
 │  ...                    │
 ├─────────────────────────┤
 │  ⚙ Settings             │
 └─────────────────────────┘
 ```
 
-- Sessions grouped by relative date (Today, Yesterday, This Week, etc.)
-- Status dot colors: green = idle, yellow = busy, red = error
-- Swipe-to-archive on session rows (gesture-handler)
+- Sessions grouped by project/worktree with fast project switching
+- Tap to switch active session; supports quick switching among multiple live sessions
+- No swipe-to-archive gesture in session rows
 - Long-press → native context menu via Zeego (archive, delete, share)
 - Pull-to-refresh
 - Tap to select → closes drawer on phone, stays open on tablet
@@ -339,6 +345,7 @@ function MessagesList({ messages }) {
 
 - Presented as native `formSheet` modal (drag-to-dismiss)
 - **Server**: Current URL, disconnect button, connection status
+- **Saved Servers**: Reachability status per server (`online`/`offline`/`checking`) with manual refresh
 - **Appearance**: Theme (light/dark/system)
 - **Providers**: List of configured providers with auth status
 - **About**: Version, server version
@@ -401,6 +408,16 @@ const animatedProps = useAnimatedProps(() => ({
 - If scrolled high up → keyboard appears on top without shifting
 - Interactive dismiss via scroll view
 - Dedupes repeat keyboard events (iOS fires onEnd 3x when returning from background)
+
+### Specific Requirement (Chat Motion + Keyboard)
+
+This is the requirement behind the "chat polish" item:
+
+1. First message in a new session animates once, then settles into normal list flow.
+2. Assistant streaming content animates only for newly streamed content (no re-animation when revisiting a session).
+3. When the composer grows/shrinks, the list stays visually anchored if the user is at the bottom.
+4. Keyboard open/close and interactive dismiss must not cause message jumps or accidental scroll position loss.
+5. Switching between active sessions preserves each session's draft text, scroll position, and streaming continuity.
 
 ---
 
@@ -726,10 +743,8 @@ function useSessionStatus(id: string) {
 3. Liquid Glass sidebar header + nav bar
 4. Zeego context menus on session items (archive, delete, share)
 5. Native formSheet modal for settings
-6. Haptic feedback on send, swipe, menu open
-7. Swipe-to-archive on session rows
-8. Session status indicators (animated dots)
-9. Skeleton loading states
+6. Haptic feedback on send, menu open, and key confirmations
+7. Skeleton loading states
 
 **Milestone: App feels like it belongs on iOS. Liquid Glass throughout.**
 
@@ -746,10 +761,10 @@ function useSessionStatus(id: string) {
 
 ### Phase 5 — Advanced (Post-v1)
 
-1. Multi-project support (project switcher in sidebar)
-2. Session diffs viewer
+1. True project + session workspace switching (multiple live sessions at once)
+2. Session diffs viewer (diff summary + full diff on demand), preferably rendered with [diffs.com](https://diffs.com/) if integration fits mobile UX and licensing constraints
 3. Tablet layout (persistent sidebar, split view)
-4. Offline indicator
+4. Saved server reachability in settings (online/offline/checking + last checked time)
 5. Push notifications
 
 ---
@@ -766,6 +781,8 @@ function useSessionStatus(id: string) {
 | Markdown performance with long messages         | Memoize rendered output per message ID + content hash. LegendList recycles cells                                |
 | ngrok connection drops                          | Auto-reconnect SSE with exponential backoff. Show persistent connection status banner                           |
 | Large session histories (1000+ messages)        | Paginate messages via API. Only load visible window + buffer                                                    |
+| Multi-session concurrency complexity            | Keep per-session UI state (draft, scroll, stream) keyed by sessionID; route events by `{directory, sessionID}` |
+| External diff rendering integration risk         | Validate `diffs.com` integration model (SDK/embed/API) and add local fallback renderer for offline/dev modes    |
 
 ---
 

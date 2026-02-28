@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from "react"
+import { memo, useCallback, useMemo, type ReactNode } from "react"
 import { View, Text, StyleSheet, Pressable, Alert } from "react-native"
 import Feather from "@expo/vector-icons/Feather"
 import type { AssistantMessage as AssistantMessageData, Message, Part } from "@opencode-ai/sdk/client"
@@ -14,9 +14,10 @@ const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; si
 type Props = {
   message: AssistantMessageData
   showFooter?: boolean
+  diffFooter?: ReactNode
 }
 
-export const AssistantMessage = memo(function AssistantMessage({ message, showFooter = false }: Props) {
+export const AssistantMessage = memo(function AssistantMessage({ message, showFooter = false, diffFooter = null }: Props) {
   const theme = useTheme()
   const parts = useMessageParts(message.id)
   const hydrateMessage = useMessages((s) => s.hydrateMessage)
@@ -32,7 +33,7 @@ export const AssistantMessage = memo(function AssistantMessage({ message, showFo
   )
   const onCopy = useCallback(() => {
     if (!copyText.trim()) return
-    Haptics.selectionAsync()
+    void Haptics.selectionAsync()
     void Clipboard.setStringAsync(copyText)
   }, [copyText])
 
@@ -41,19 +42,25 @@ export const AssistantMessage = memo(function AssistantMessage({ message, showFo
     const state = useMessages.getState()
     const prompt = findRetryPrompt(message.id, state.messages[message.sessionID] ?? [], state.parts)
     if (!prompt) return
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     void send(message.sessionID, prompt).catch(() => {
       Alert.alert("Retry failed", "Could not resend that prompt. Please try again.")
     })
   }, [canRetry, message.id, message.sessionID, send])
 
-  if (parts.length === 0) return null
+  if (parts.length === 0 && !diffFooter && !showFooter) return null
 
   return (
     <View style={styles.container}>
       <View style={styles.content}>
         {parts.map((part) => (
-          <PartRenderer key={part.id} part={part} isUser={false} onHydrateMessage={onHydrateMessage} />
+          <PartRenderer
+            key={part.id}
+            part={part}
+            isUser={false}
+            isStreamingComplete={!!message.time.completed}
+            onHydrateMessage={onHydrateMessage}
+          />
         ))}
       </View>
       {showFooter ? (
@@ -84,6 +91,7 @@ export const AssistantMessage = memo(function AssistantMessage({ message, showFo
           </View>
         </View>
       ) : null}
+      {diffFooter ? <View style={styles.diffFooter}>{diffFooter}</View> : null}
     </View>
   )
 })
@@ -197,5 +205,8 @@ const styles = StyleSheet.create({
   },
   footerIconButtonPressed: {
     opacity: 0.6,
+  },
+  diffFooter: {
+    width: "100%",
   },
 })

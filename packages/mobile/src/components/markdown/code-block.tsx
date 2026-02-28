@@ -12,7 +12,7 @@ export const CodeBlock = memo(function CodeBlock({ code, language }: Props) {
   const theme = useTheme()
 
   const copy = useCallback(() => {
-    Clipboard.setStringAsync(code)
+    void Clipboard.setStringAsync(code)
   }, [code])
 
   const normalized = normalizeLanguage(language)

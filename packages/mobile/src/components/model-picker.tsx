@@ -19,6 +19,8 @@ import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withSpring
 import { useSettings, modelName, modelKey } from "../store/settings"
 import { useTheme, type Theme } from "../theme"
 
+const AnimatedView = Animated.View as React.ComponentType<{ style?: unknown; children?: React.ReactNode }>
+
 export type ModelPoint = {
   x: number
   y: number
@@ -28,6 +30,7 @@ type ModelItem = {
   key: string
   id: string
   name: string
+  searchText: string
   providerID: string
   providerName: string
   reasoning: boolean
@@ -49,6 +52,10 @@ type Props = {
 }
 
 const POPULAR_PROVIDERS = ["opencode", "anthropic", "github-copilot", "openai", "google", "openrouter", "vercel"] as const
+const PICKER_HORIZONTAL_MARGIN = 36
+const PICKER_VERTICAL_MARGIN = 72
+const PICKER_MAX_WIDTH = 520
+const PICKER_MAX_HEIGHT = 640
 
 function compareProviderOrder(aID: string, aName: string, bID: string, bName: string) {
   const ai = POPULAR_PROVIDERS.indexOf(aID as (typeof POPULAR_PROVIDERS)[number])
@@ -97,8 +104,11 @@ export function ModelPicker({ visible, onClose, anchor = null }: Props) {
   const panel = useSharedValue(0)
   const shade = useSharedValue(0)
 
-  const popupWidth = Math.min(windowWidth - 24, 560)
-  const popupHeight = Math.min(windowHeight - insets.top - insets.bottom - 24, 700)
+  const popupWidth = Math.min(windowWidth - PICKER_HORIZONTAL_MARGIN, PICKER_MAX_WIDTH)
+  const popupHeight = Math.min(windowHeight - insets.top - insets.bottom - PICKER_VERTICAL_MARGIN, PICKER_MAX_HEIGHT)
+  const isDark = theme.colors.background === "#09090b"
+  const panelTint = theme.colors.background + (isDark ? "cc" : "dc")
+  const panelBorder = theme.colors.border + (isDark ? "99" : "88")
 
   const centerX = windowWidth / 2
   const centerY = windowHeight / 2
@@ -178,11 +188,13 @@ export function ModelPicker({ visible, onClose, anchor = null }: Props) {
       for (const [baseModelID, info] of Object.entries(provider.models)) {
         if (info.status === "deprecated") continue
         const id = info.id || baseModelID
+        const name = info.name || id
         const key = modelKey({ providerID: provider.id, modelID: id })
         result.push({
           key,
           id,
-          name: info.name || id,
+          name,
+          searchText: `${name} ${id} ${providerName} ${provider.id}`.toLowerCase(),
           providerID: provider.id,
           providerName,
           reasoning: info.reasoning,
@@ -195,14 +207,15 @@ export function ModelPicker({ visible, onClose, anchor = null }: Props) {
     return result
   }, [providerData, favorites, removed])
 
+  const normalizedQuery = useMemo(() => query.trim().toLowerCase(), [query])
+
   const models = useMemo(() => {
-    const value = query.trim().toLowerCase()
     return allModels.filter((item) => {
       if (!showRemoved && item.removed) return false
-      if (!value) return true
-      return `${item.name} ${item.id} ${item.providerName} ${item.providerID}`.toLowerCase().includes(value)
+      if (!normalizedQuery) return true
+      return item.searchText.includes(normalizedQuery)
     })
-  }, [allModels, query, showRemoved])
+  }, [allModels, normalizedQuery, showRemoved])
 
   const sections = useMemo<ModelSection[]>(() => {
     const map = new Map<string, ModelSection>()
@@ -261,7 +274,7 @@ export function ModelPicker({ visible, onClose, anchor = null }: Props) {
   const handleSelect = useCallback(
     (item: ModelItem) => {
       if (item.removed) return
-      Haptics.selectionAsync()
+      void Haptics.selectionAsync()
       setModel({ providerID: item.providerID, modelID: item.id })
       handleClose()
     },
@@ -269,14 +282,14 @@ export function ModelPicker({ visible, onClose, anchor = null }: Props) {
   )
 
   const handleDefault = useCallback(() => {
-    Haptics.selectionAsync()
+    void Haptics.selectionAsync()
     setModel(null)
     handleClose()
   }, [handleClose, setModel])
 
   const handleFavorite = useCallback(
     (item: ModelItem) => {
-      Haptics.selectionAsync()
+      void Haptics.selectionAsync()
       toggleFavorite({ providerID: item.providerID, modelID: item.id })
     },
     [toggleFavorite],
@@ -284,7 +297,7 @@ export function ModelPicker({ visible, onClose, anchor = null }: Props) {
 
   const handleRemove = useCallback(
     (item: ModelItem) => {
-      Haptics.selectionAsync()
+      void Haptics.selectionAsync()
       removeModel({ providerID: item.providerID, modelID: item.id })
     },
     [removeModel],
@@ -292,19 +305,19 @@ export function ModelPicker({ visible, onClose, anchor = null }: Props) {
 
   const handleRestore = useCallback(
     (item: ModelItem) => {
-      Haptics.selectionAsync()
+      void Haptics.selectionAsync()
       restoreModel({ providerID: item.providerID, modelID: item.id })
     },
     [restoreModel],
   )
 
   const handleRemovedToggle = useCallback(() => {
-    Haptics.selectionAsync()
+    void Haptics.selectionAsync()
     setShowRemoved((state) => !state)
   }, [])
 
   const toggleProvider = useCallback((providerID: string) => {
-    Haptics.selectionAsync()
+    void Haptics.selectionAsync()
     setCollapsed((state) => ({
       ...state,
       [providerID]: !state[providerID],
@@ -436,13 +449,13 @@ export function ModelPicker({ visible, onClose, anchor = null }: Props) {
   return (
     <Modal visible={visible} transparent animationType="none" onRequestClose={handleClose}>
       <View style={styles.modalRoot}>
-        <Animated.View style={[styles.backdrop, backdropStyle]}>
+        <AnimatedView style={[styles.backdrop, backdropStyle]}>
           <Pressable style={styles.backdropPress} onPress={handleClose}>
             <View />
           </Pressable>
-        </Animated.View>
+        </AnimatedView>
         <View style={[styles.center, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}>
-          <Animated.View style={popupStyle}>
+          <AnimatedView style={popupStyle}>
             <View
               style={[
                 styles.popup,
@@ -453,18 +466,20 @@ export function ModelPicker({ visible, onClose, anchor = null }: Props) {
               ]}
             >
               {isLiquidGlassSupported ? (
-                <Glass style={[styles.surface, { borderRadius: 28 }]}>{content}</Glass>
+                <Glass style={[styles.surface, { borderRadius: 24, borderColor: panelBorder }]}>
+                  <View style={[styles.surfaceTone, { backgroundColor: panelTint }]}>{content}</View>
+                </Glass>
               ) : (
                 <BlurView
-                  intensity={80}
-                  tint={theme.colors.background === "#09090b" ? "dark" : "light"}
-                  style={[styles.surface, { borderRadius: 20, borderColor: theme.colors.border + "70" }]}
+                  intensity={92}
+                  tint={isDark ? "dark" : "light"}
+                  style={[styles.surface, { borderRadius: 20, borderColor: panelBorder }]}
                 >
-                  {content}
+                  <View style={[styles.surfaceTone, { backgroundColor: panelTint }]}>{content}</View>
                 </BlurView>
               )}
             </View>
-          </Animated.View>
+          </AnimatedView>
         </View>
       </View>
     </Modal>
@@ -583,7 +598,7 @@ const styles = StyleSheet.create({
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.16)",
+    backgroundColor: "rgba(0,0,0,0.24)",
   },
   backdropPress: {
     ...StyleSheet.absoluteFillObject,
@@ -592,7 +607,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
   },
   popup: {
     overflow: "hidden",
@@ -611,14 +626,17 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     borderWidth: StyleSheet.hairlineWidth,
   },
+  surfaceTone: {
+    flex: 1,
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 8,
     paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 10,
+    paddingTop: 12,
+    paddingBottom: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   headerText: {
@@ -649,7 +667,7 @@ const styles = StyleSheet.create({
   },
   searchWrap: {
     paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   search: {
@@ -658,7 +676,7 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 12,
     paddingHorizontal: 10,
-    minHeight: 42,
+    minHeight: 40,
   },
   searchIcon: {
     fontSize: 15,
@@ -678,7 +696,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
     paddingHorizontal: 16,
-    paddingTop: 2,
+    paddingTop: 1,
   },
   control: {
     flex: 1,
@@ -700,8 +718,8 @@ const styles = StyleSheet.create({
   },
   summary: {
     paddingHorizontal: 16,
-    paddingTop: 9,
-    paddingBottom: 6,
+    paddingTop: 7,
+    paddingBottom: 5,
   },
   summaryText: {
     fontSize: 11,
@@ -718,8 +736,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 7,
+    paddingTop: 8,
+    paddingBottom: 6,
   },
   sectionLeft: {
     flexDirection: "row",
@@ -761,7 +779,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderRadius: 10,
     paddingHorizontal: 10,
-    paddingVertical: 10,
+    paddingVertical: 8,
   },
   rowLeft: {
     flex: 1,

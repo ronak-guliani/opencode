@@ -21,6 +21,7 @@ export default function SessionIndex() {
   const inputRef = useRef<TextInput>(null)
   const [pickerVisible, setPickerVisible] = useState(false)
   const [pickerAnchor, setPickerAnchor] = useState<{ x: number; y: number } | null>(null)
+  const trimmedText = text.trim()
 
   useEffect(() => {
     select(null)
@@ -29,7 +30,7 @@ export default function SessionIndex() {
   const handleSend = useCallback(async () => {
     const content = text.trim()
     if (!content || sending) return
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
     setText("")
     setSending(true)
     try {
@@ -56,17 +57,17 @@ export default function SessionIndex() {
       style={[
         styles.sendButton,
         {
-          backgroundColor: text.trim() ? theme.colors.accent : theme.colors.surfaceRaised,
+          backgroundColor: trimmedText ? theme.colors.accent : theme.colors.surfaceRaised,
         },
       ]}
       onPress={handleSend}
-      disabled={!text.trim() || sending}
+      disabled={!trimmedText || sending}
     >
       <Text
         style={[
           styles.sendIcon,
           {
-            color: text.trim() ? theme.colors.accentText : theme.colors.textTertiary,
+            color: trimmedText ? theme.colors.accentText : theme.colors.textTertiary,
           },
         ]}
       >
