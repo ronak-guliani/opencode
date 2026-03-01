@@ -16,7 +16,7 @@ export const CodeBlock = memo(function CodeBlock({ code, language }: Props) {
   }, [code])
 
   const normalized = normalizeLanguage(language)
-  const highlighted = useMemo(() => highlight(code, normalized), [code, normalized])
+  const highlighted = useMemo(() => cachedHighlight(code, normalized), [code, normalized])
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.codeBackground, borderRadius: theme.radii.md }]}>
@@ -50,6 +50,8 @@ export const CodeBlock = memo(function CodeBlock({ code, language }: Props) {
 
 type TokenType = "plain" | "comment" | "string" | "number" | "keyword"
 type Token = { type: TokenType; value: string }
+const HIGHLIGHT_CACHE_MAX = 180
+const highlightCache = new Map<string, Token[]>()
 
 const KEYWORDS: Record<string, Set<string>> = {
   ts: new Set([
@@ -169,6 +171,34 @@ function normalizeLanguage(language?: string): string {
   if (value === "bash" || value === "zsh" || value === "shell") return "sh"
   if (value === "jsonc") return "json"
   return value
+}
+
+function codeHash(value: string) {
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+function cachedHighlight(code: string, language: string) {
+  const key = `${language}:${codeHash(code)}:${code.length}`
+  const cached = highlightCache.get(key)
+  if (cached) {
+    highlightCache.delete(key)
+    highlightCache.set(key, cached)
+    return cached
+  }
+
+  const next = highlight(code, language)
+  highlightCache.set(key, next)
+  while (highlightCache.size > HIGHLIGHT_CACHE_MAX) {
+    const oldest = highlightCache.keys().next().value
+    if (!oldest) break
+    highlightCache.delete(oldest)
+  }
+  return next
 }
 
 function highlight(code: string, language: string): Token[] {

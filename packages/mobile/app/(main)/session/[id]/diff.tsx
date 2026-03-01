@@ -17,6 +17,7 @@ import { useMessages } from "../../../../src/store/messages"
 import { useSessions } from "../../../../src/store/sessions"
 import { computeSummary, useDiffs } from "../../../../src/store/diffs"
 import { parseUnifiedDiffRows } from "../../../../src/features/diff/parse"
+import { resolveDiffLineCounts } from "../../../../src/features/diff/counts"
 import { synthesizeSessionDiff } from "../../../../src/features/diff/synthetic"
 import type { DiffLine, SessionFileDiff } from "../../../../src/features/diff/types"
 import { useSessionPartsMap } from "../../../../src/api/hooks"
@@ -41,15 +42,43 @@ function asNumber(value: unknown) {
   return Number.isFinite(value) ? Number(value) : 0
 }
 
+function resolveFilePath(diff: Record<string, unknown>) {
+  const candidates = [
+    diff.file,
+    diff.path,
+    diff.filePath,
+    diff.filepath,
+    diff.relativePath,
+    diff.filename,
+    diff.name,
+  ]
+  for (const candidate of candidates) {
+    const value = asString(candidate).trim()
+    if (value) return value
+  }
+  return ""
+}
+
 function normalizeDiffEntry(input: unknown): SessionFileDiff | null {
-  const diff = (input && typeof input === "object" ? input : {}) as Partial<SessionFileDiff>
-  const file = asString(diff?.file).trim()
+  const diff = (input && typeof input === "object" ? input : {}) as Record<string, unknown>
+  const file = resolveFilePath(diff)
   if (!file) return null
-  const before = asString(diff?.before)
-  const after = asString(diff?.after)
-  const providedAdditions = Math.max(0, asNumber(diff?.additions))
-  const providedDeletions = Math.max(0, asNumber(diff?.deletions))
-  const { additions, deletions } = resolveLineCounts(file, before, after, providedAdditions, providedDeletions)
+  const before = asString(diff.before)
+  const after = asString(diff.after)
+  const providedAdditions = Math.max(0, asNumber(diff.additions))
+  const providedDeletions = Math.max(0, asNumber(diff.deletions))
+  const status = asString(diff.status || diff.type) || undefined
+  const { additions, deletions } = resolveDiffLineCounts(
+    {
+      file,
+      before,
+      after,
+      additions: providedAdditions,
+      deletions: providedDeletions,
+      status,
+    },
+    { maxChars: MAX_RENDERABLE_DIFF_CHARS },
+  )
 
   return {
     file,
@@ -57,50 +86,8 @@ function normalizeDiffEntry(input: unknown): SessionFileDiff | null {
     after,
     additions,
     deletions,
-    status: asString(diff?.status) || undefined,
+    status,
   }
-}
-
-function resolveLineCounts(
-  file: string,
-  before: string,
-  after: string,
-  additions: number,
-  deletions: number,
-) {
-  if (additions > 0 || deletions > 0) return { additions, deletions }
-  if (!before && !after) return { additions, deletions }
-  if (before === after) return { additions, deletions }
-  if (before.length + after.length > MAX_RENDERABLE_DIFF_CHARS) return { additions, deletions }
-
-  try {
-    const rows = parseUnifiedDiffRows({
-      file,
-      before,
-      after,
-      additions,
-      deletions,
-      status: "modified",
-    })
-
-    let nextAdditions = 0
-    let nextDeletions = 0
-    for (const row of rows) {
-      if (row.type === "added") nextAdditions += 1
-      if (row.type === "removed") nextDeletions += 1
-    }
-
-    if (nextAdditions > 0 || nextDeletions > 0) {
-      return {
-        additions: nextAdditions,
-        deletions: nextDeletions,
-      }
-    }
-  } catch {
-    // ignore
-  }
-
-  return { additions, deletions }
 }
 
 function dedupeDiffs(input: SessionFileDiff[]): SessionFileDiff[] {

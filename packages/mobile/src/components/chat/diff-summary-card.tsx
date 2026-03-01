@@ -11,22 +11,60 @@ type Props = {
   diffs?: SessionFileDiff[] | null
   summary?: DiffSummary | null
   isUpdating?: boolean
+  mode?: "turn" | "session"
+  title?: string
   onPress: () => void
 }
 
-export const DiffSummaryCard = memo(function DiffSummaryCard({ diffs, summary, isUpdating = false, onPress }: Props) {
+export const DiffSummaryCard = memo(function DiffSummaryCard({ diffs, summary, isUpdating = false, mode, title, onPress }: Props) {
   const theme = useTheme()
   const safeDiffs = useMemo(() => (Array.isArray(diffs) ? diffs.filter((item) => !!item?.file) : EMPTY_DIFFS), [diffs])
+  const summaryFromDiffs = useMemo(() => {
+    if (safeDiffs.length === 0) return ZERO_SUMMARY
+    return safeDiffs.reduce<DiffSummary>(
+      (acc, item) => ({
+        files: acc.files + 1,
+        additions: acc.additions + Math.max(0, Number.isFinite(item.additions) ? Number(item.additions) : 0),
+        deletions: acc.deletions + Math.max(0, Number.isFinite(item.deletions) ? Number(item.deletions) : 0),
+      }),
+      { files: 0, additions: 0, deletions: 0 },
+    )
+  }, [safeDiffs])
   const safeSummary = useMemo(
     () => ({
-      files: Number.isFinite(summary?.files) ? Math.max(0, Number(summary?.files)) : ZERO_SUMMARY.files,
-      additions: Number.isFinite(summary?.additions) ? Math.max(0, Number(summary?.additions)) : ZERO_SUMMARY.additions,
-      deletions: Number.isFinite(summary?.deletions) ? Math.max(0, Number(summary?.deletions)) : ZERO_SUMMARY.deletions,
+      files: Math.max(
+        Number.isFinite(summary?.files) ? Math.max(0, Number(summary?.files)) : ZERO_SUMMARY.files,
+        summaryFromDiffs.files,
+      ),
+      additions: Math.max(
+        Number.isFinite(summary?.additions) ? Math.max(0, Number(summary?.additions)) : ZERO_SUMMARY.additions,
+        summaryFromDiffs.additions,
+      ),
+      deletions: Math.max(
+        Number.isFinite(summary?.deletions) ? Math.max(0, Number(summary?.deletions)) : ZERO_SUMMARY.deletions,
+        summaryFromDiffs.deletions,
+      ),
     }),
-    [summary?.additions, summary?.deletions, summary?.files],
+    [summary?.additions, summary?.deletions, summary?.files, summaryFromDiffs.additions, summaryFromDiffs.deletions, summaryFromDiffs.files],
   )
   const visibleDiffs = useMemo(() => safeDiffs.slice(0, MAX_VISIBLE_FILES), [safeDiffs])
   const hiddenDiffCount = Math.max(0, safeDiffs.length - visibleDiffs.length)
+  const resolvedMode = useMemo(() => {
+    if (mode) return mode
+    const label = (title || "").toLowerCase()
+    if (label.includes("turn")) return "turn"
+    if (label.includes("session")) return "session"
+    return null
+  }, [mode, title])
+  const modeLabel = resolvedMode === "turn" ? "This Turn" : resolvedMode === "session" ? "Session Total" : title || "Diff"
+  const modeHint =
+    resolvedMode === "turn"
+      ? "Only changes made in this response"
+      : resolvedMode === "session"
+        ? "All changes accumulated in this chat"
+        : ""
+  const modeColor = resolvedMode === "turn" ? theme.colors.accent : resolvedMode === "session" ? theme.colors.warning : theme.colors.border
+  const totalsLabel = `${safeSummary.files} file${safeSummary.files === 1 ? "" : "s"}  +${safeSummary.additions}  -${safeSummary.deletions}`
 
   return (
     <View style={styles.container}>
@@ -35,9 +73,25 @@ export const DiffSummaryCard = memo(function DiffSummaryCard({ diffs, summary, i
         style={({ pressed }) => [
           styles.card,
           pressed && styles.pressed,
-          { backgroundColor: theme.colors.surface, borderColor: theme.colors.borderSubtle },
+          {
+            backgroundColor: theme.colors.surface,
+            borderColor: theme.colors.borderSubtle,
+            borderLeftColor: modeColor,
+          },
         ]}
       >
+        <View style={styles.head}>
+          <View style={[styles.badge, { backgroundColor: theme.colors.surfaceRaised }]}>
+            <View style={[styles.badgeDot, { backgroundColor: modeColor }]} />
+            <Text style={[styles.title, { color: theme.colors.text }]}>{modeLabel}</Text>
+          </View>
+          <Text style={[styles.totals, { color: theme.colors.textTertiary }]} numberOfLines={1}>
+            {totalsLabel}
+          </Text>
+        </View>
+        {modeHint ? (
+          <Text style={[styles.hint, { color: theme.colors.textTertiary }]}>{modeHint}</Text>
+        ) : null}
         {visibleDiffs.length > 0 ? (
           <View style={styles.rows}>
             {visibleDiffs.map((diff) => (
@@ -76,13 +130,52 @@ const styles = StyleSheet.create({
   },
   card: {
     borderWidth: StyleSheet.hairlineWidth,
+    borderLeftWidth: 2,
     borderRadius: 12,
     gap: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
+  head: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 999,
+  },
+  badgeDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
   rows: {
     gap: 6,
+  },
+  title: {
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
+  },
+  totals: {
+    flexShrink: 1,
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "500",
+    textAlign: "right",
+  },
+  hint: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "500",
   },
   row: {
     flexDirection: "row",

@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from "react-native"
+import Feather from "@expo/vector-icons/Feather"
 import { useRouter } from "expo-router"
 import { LiquidGlassContainerView, LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
 import { bootstrap } from "../../api/bootstrap"
@@ -46,6 +47,7 @@ const GlassContainer = LiquidGlassContainerView as React.ComponentType<{
   style?: unknown
   children?: React.ReactNode
 }>
+const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string; style?: unknown }>
 
 const AUTO_POLL_MS = 12_000
 const AUTO_SKIP_AFTER_MANUAL_MS = 5_000
@@ -71,9 +73,6 @@ function statusText(state: HealthState) {
 export const ServerSwitcher = memo(function ServerSwitcher({ sidebarVisible, onServerSwitched }: Props) {
   const theme = useTheme()
   const isDark = theme.colors.background === "#09090b"
-  const glassColorScheme: "dark" | "light" = isDark ? "dark" : "light"
-  const glassTint = isDark ? "rgba(9,9,12,0.28)" : "rgba(255,255,255,0.28)"
-  const panelTint = theme.colors.background + (isDark ? "cc" : "dc")
   const panelBorder = theme.colors.border + (isDark ? "99" : "88")
   const router = useRouter()
   const osMajor = typeof Platform.Version === "string" ? parseInt(Platform.Version, 10) : Platform.Version
@@ -109,6 +108,7 @@ export const ServerSwitcher = memo(function ServerSwitcher({ sidebarVisible, onS
   const serverSignature = useMemo(() => servers.map((server) => server.url).join("|"), [servers])
   const selectedServerUrl = activeServerUrl ?? servers[0]?.url ?? null
   const selectedServerName = selectedServerUrl ? serverDisplayName(selectedServerUrl) : "Select a server"
+  const modalAnimation: "none" | "fade" = Platform.OS === "ios" ? "none" : "fade"
 
   const resolveHealth = useCallback(
     (url: string): HealthItem => {
@@ -353,7 +353,7 @@ export const ServerSwitcher = memo(function ServerSwitcher({ sidebarVisible, onS
       <Text style={[styles.selectorState, { color: theme.colors.textTertiary }]}>
         {selectedHealth ? statusText(selectedHealth.state) : "Disconnected"}
       </Text>
-      <Text style={[styles.chevron, { color: theme.colors.textSecondary }]}>⌄</Text>
+      <FeatherIcon style={styles.chevron} name="chevron-down" size={12} color={theme.colors.textSecondary} />
     </Pressable>
   )
 
@@ -369,7 +369,7 @@ export const ServerSwitcher = memo(function ServerSwitcher({ sidebarVisible, onS
       accessibilityLabel="Add server"
       hitSlop={8}
     >
-      <Text style={[styles.addButtonText, { color: theme.colors.text }]}>＋</Text>
+      <FeatherIcon name="plus" size={18} color={theme.colors.text} />
     </Pressable>
   )
 
@@ -378,22 +378,10 @@ export const ServerSwitcher = memo(function ServerSwitcher({ sidebarVisible, onS
       <View style={styles.compactRow}>
         {isLiquidGlassSupported ? (
           <GlassContainer spacing={8} style={styles.compactRowGlass}>
-            <Glass
-              interactive
-              effect="regular"
-              colorScheme={glassColorScheme}
-              tintColor={glassTint}
-              style={styles.selectorGlass}
-            >
+            <Glass interactive effect="regular" style={styles.selectorGlass}>
               {compactControl}
             </Glass>
-            <Glass
-              interactive
-              effect="regular"
-              colorScheme={glassColorScheme}
-              tintColor={glassTint}
-              style={styles.addGlass}
-            >
+            <Glass interactive effect="regular" style={styles.addGlass}>
               {addButton}
             </Glass>
           </GlassContainer>
@@ -425,36 +413,34 @@ export const ServerSwitcher = memo(function ServerSwitcher({ sidebarVisible, onS
         )}
       </View>
 
-      <Modal visible={listOpen} transparent animationType="fade" onRequestClose={() => setListOpen(false)}>
+      <Modal
+        visible={listOpen}
+        transparent
+        animationType={modalAnimation}
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setListOpen(false)}
+      >
         <View style={styles.modalRoot}>
           <Pressable style={styles.modalBackdrop} onPress={() => setListOpen(false)} />
           <View style={styles.popoverWrap}>
             {isLiquidGlassSupported ? (
-              <Glass
-                interactive
-                effect="regular"
-                colorScheme={glassColorScheme}
-                tintColor={glassTint}
-                style={[styles.popoverGlass, { borderColor: panelBorder }]}
-              >
-                <View style={[styles.surfaceTone, { backgroundColor: panelTint }]}>
-                  <ServerListPopover
-                    servers={servers}
-                    activeServerUrl={activeServerUrl}
-                    connectionStatus={connectionStatus}
-                    resolveHealth={resolveHealth}
-                    switchingURL={switchingURL}
-                    refreshing={refreshing}
-                    listError={listError}
-                    onRefresh={() => void refreshHealth("manual")}
-                    onConnect={(url) => void handleSwitchServer(url)}
-                    onOpenAdd={() => {
-                      setListOpen(false)
-                      setAddOpen(true)
-                    }}
-                    missingNativeGlass={missingNativeGlass}
-                  />
-                </View>
+              <Glass interactive effect="regular" style={[styles.popoverGlass, { borderColor: panelBorder }]}>
+                <ServerListPopover
+                  servers={servers}
+                  activeServerUrl={activeServerUrl}
+                  connectionStatus={connectionStatus}
+                  resolveHealth={resolveHealth}
+                  switchingURL={switchingURL}
+                  refreshing={refreshing}
+                  listError={listError}
+                  onRefresh={() => void refreshHealth("manual")}
+                  onConnect={(url) => void handleSwitchServer(url)}
+                  onOpenAdd={() => {
+                    setListOpen(false)
+                    setAddOpen(true)
+                  }}
+                  missingNativeGlass={missingNativeGlass}
+                />
               </Glass>
             ) : (
               <View
@@ -488,34 +474,32 @@ export const ServerSwitcher = memo(function ServerSwitcher({ sidebarVisible, onS
         </View>
       </Modal>
 
-      <Modal visible={addOpen} transparent animationType="fade" onRequestClose={() => setAddOpen(false)}>
+      <Modal
+        visible={addOpen}
+        transparent
+        animationType={modalAnimation}
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setAddOpen(false)}
+      >
         <View style={styles.modalRoot}>
           <Pressable style={styles.modalBackdrop} onPress={() => setAddOpen(false)} />
           <View style={styles.popoverWrap}>
             {isLiquidGlassSupported ? (
-              <Glass
-                interactive
-                effect="regular"
-                colorScheme={glassColorScheme}
-                tintColor={glassTint}
-                style={[styles.popoverGlass, { borderColor: panelBorder }]}
-              >
-                <View style={[styles.surfaceTone, { backgroundColor: panelTint }]}>
-                  <AddServerPopover
-                    addServerURL={addServerURL}
-                    setAddServerURL={setAddServerURL}
-                    addAuthEnabled={addAuthEnabled}
-                    setAddAuthEnabled={setAddAuthEnabled}
-                    addUsername={addUsername}
-                    setAddUsername={setAddUsername}
-                    addPassword={addPassword}
-                    setAddPassword={setAddPassword}
-                    addingServer={addingServer}
-                    addError={addError}
-                    onClose={() => setAddOpen(false)}
-                    onSave={() => void handleAddServer()}
-                  />
-                </View>
+              <Glass interactive effect="regular" style={[styles.popoverGlass, { borderColor: panelBorder }]}>
+                <AddServerPopover
+                  addServerURL={addServerURL}
+                  setAddServerURL={setAddServerURL}
+                  addAuthEnabled={addAuthEnabled}
+                  setAddAuthEnabled={setAddAuthEnabled}
+                  addUsername={addUsername}
+                  setAddUsername={setAddUsername}
+                  addPassword={addPassword}
+                  setAddPassword={setAddPassword}
+                  addingServer={addingServer}
+                  addError={addError}
+                  onClose={() => setAddOpen(false)}
+                  onSave={() => void handleAddServer()}
+                />
               </Glass>
             ) : (
               <View
@@ -598,7 +582,7 @@ const ServerListPopover = memo(function ServerListPopover({
             {refreshing ? (
               <ActivityIndicator size="small" color={theme.colors.textSecondary} />
             ) : (
-              <Text style={[styles.headerButtonGlyph, { color: theme.colors.textSecondary }]}>↻</Text>
+              <FeatherIcon style={styles.headerButtonGlyph} name="rotate-cw" size={13} color={theme.colors.textSecondary} />
             )}
           </Pressable>
           <Pressable
@@ -610,7 +594,7 @@ const ServerListPopover = memo(function ServerListPopover({
             onPress={onOpenAdd}
             hitSlop={8}
           >
-            <Text style={[styles.headerButtonGlyph, { color: theme.colors.textSecondary }]}>＋</Text>
+            <FeatherIcon style={styles.headerButtonGlyph} name="plus" size={13} color={theme.colors.textSecondary} />
           </Pressable>
         </View>
       </View>
@@ -723,7 +707,7 @@ const AddServerPopover = memo(function AddServerPopover({
           onPress={onClose}
           hitSlop={8}
         >
-          <Text style={[styles.headerButtonGlyph, { color: theme.colors.textSecondary }]}>✕</Text>
+          <FeatherIcon style={styles.headerButtonGlyph} name="x" size={13} color={theme.colors.textSecondary} />
         </Pressable>
       </View>
 
@@ -834,7 +818,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   chevron: {
-    fontSize: 12,
+    marginTop: 1,
   },
   addGlass: {
     width: 38,
@@ -858,10 +842,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  addButtonText: {
-    fontSize: 18,
-    lineHeight: 20,
-  },
   statusDot: {
     width: 8,
     height: 8,
@@ -883,9 +863,6 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
-  },
-  surfaceTone: {
-    borderRadius: 28,
   },
   popoverFallback: {
     borderRadius: 24,
@@ -921,9 +898,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   headerButtonGlyph: {
-    fontSize: 13,
-    lineHeight: 14,
-    fontWeight: "700",
+    marginTop: 0.5,
   },
   serverList: {
     maxHeight: 330,

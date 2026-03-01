@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, type ReactNode } from "react"
+import { memo, useCallback, useMemo, useRef, type ReactNode } from "react"
 import { View, Text, StyleSheet, Pressable, Alert } from "react-native"
 import Feather from "@expo/vector-icons/Feather"
 import type { AssistantMessage as AssistantMessageData, Message, Part } from "@opencode-ai/sdk/client"
@@ -22,8 +22,9 @@ export const AssistantMessage = memo(function AssistantMessage({ message, showFo
   const parts = useMessageParts(message.id)
   const hydrateMessage = useMessages((s) => s.hydrateMessage)
   const send = useMessages((s) => s.send)
+  const copyCacheRef = useRef<{ key: string; text: string }>({ key: "", text: "" })
   const totalTokens = message.tokens.input + message.tokens.output + message.tokens.reasoning
-  const copyText = useMemo(() => buildCopyText(parts), [parts])
+  const copyKey = useMemo(() => buildCopyCacheKey(parts), [parts])
   const canRetry = !!message.time.completed
   const onHydrateMessage = useCallback(
     (messageID: string) => {
@@ -32,10 +33,15 @@ export const AssistantMessage = memo(function AssistantMessage({ message, showFo
     [hydrateMessage, message.sessionID],
   )
   const onCopy = useCallback(() => {
+    let copyText = copyCacheRef.current.text
+    if (copyCacheRef.current.key !== copyKey) {
+      copyText = buildCopyText(parts)
+      copyCacheRef.current = { key: copyKey, text: copyText }
+    }
     if (!copyText.trim()) return
     void Haptics.selectionAsync()
     void Clipboard.setStringAsync(copyText)
-  }, [copyText])
+  }, [copyKey, parts])
 
   const onRetry = useCallback(() => {
     if (!canRetry) return
@@ -99,6 +105,20 @@ export const AssistantMessage = memo(function AssistantMessage({ message, showFo
 function formatTokens(n: number): string {
   if (n < 1000) return `${n}`
   return `${(n / 1000).toFixed(1)}k`
+}
+
+function buildCopyCacheKey(parts: Part[]) {
+  return parts
+    .map((part) => {
+      if (part.type === "text" || part.type === "reasoning") return `${part.id}:${part.type}:${part.text.length}`
+      if (part.type === "tool") {
+        const output = "output" in part.state && typeof part.state.output === "string" ? part.state.output.length : 0
+        const error = "error" in part.state && typeof part.state.error === "string" ? part.state.error.length : 0
+        return `${part.id}:${part.type}:${part.state.status}:${output}:${error}`
+      }
+      return `${part.id}:${part.type}`
+    })
+    .join("|")
 }
 
 function findRetryPrompt(

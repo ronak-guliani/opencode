@@ -1,6 +1,9 @@
 import { create as createStore } from "zustand"
+import { createOpencodeClient } from "@opencode-ai/sdk/client"
 import { client } from "../api/client"
+import { headers, url } from "../api/client"
 import type { DiffSummary, SessionFileDiff } from "../features/diff/types"
+import { useSessions } from "./sessions"
 
 const DIFF_CACHE_TTL_MS = 30_000
 
@@ -18,21 +21,102 @@ function stringOrEmpty(input: unknown): string {
   return typeof input === "string" ? input : ""
 }
 
-function normalizeDiff(input: unknown): SessionFileDiff {
+function resolveFilePath(diff: Record<string, unknown>): string {
+  const candidates = [
+    diff.file,
+    diff.path,
+    diff.filePath,
+    diff.filepath,
+    diff.relativePath,
+    diff.filename,
+    diff.name,
+  ]
+  for (const candidate of candidates) {
+    const value = stringOrEmpty(candidate).trim()
+    if (value) return value
+  }
+  return ""
+}
+
+function normalizeDiff(input: unknown): SessionFileDiff | null {
   const diff = (input && typeof input === "object" ? input : {}) as Partial<SessionFileDiff>
+  const file = resolveFilePath(diff as Record<string, unknown>)
+  if (!file) return null
   return {
-    file: stringOrEmpty(diff.file),
+    file,
     before: stringOrEmpty(diff.before),
     after: stringOrEmpty(diff.after),
     additions: Math.max(0, numberOrZero(diff.additions)),
     deletions: Math.max(0, numberOrZero(diff.deletions)),
-    status: typeof diff.status === "string" ? diff.status : undefined,
+    status:
+      typeof diff.status === "string"
+        ? diff.status
+        : typeof (diff as { type?: unknown }).type === "string"
+          ? (diff as { type: string }).type
+          : undefined,
   }
 }
 
 function normalizeDiffList(diff: unknown): SessionFileDiff[] {
   if (!Array.isArray(diff)) return []
-  return diff.map(normalizeDiff)
+  return diff.map(normalizeDiff).filter((item): item is SessionFileDiff => !!item)
+}
+
+function mergeDiffs(input: SessionFileDiff[]): SessionFileDiff[] {
+  const byFile = new Map<string, SessionFileDiff>()
+  for (const item of input) {
+    const file = stringOrEmpty(item.file)
+    if (!file) continue
+    const previous = byFile.get(file)
+    if (!previous) {
+      byFile.set(file, item)
+      continue
+    }
+    byFile.set(file, {
+      file,
+      before: item.before || previous.before,
+      after: item.after || previous.after,
+      additions: Math.max(previous.additions, item.additions),
+      deletions: Math.max(previous.deletions, item.deletions),
+      status: item.status ?? previous.status,
+    })
+  }
+  return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file))
+}
+
+async function fetchDiffFromWorktree(sessionID: string, worktree: string | undefined) {
+  if (!worktree) {
+    const result = await client().session.diff({
+      path: { id: sessionID },
+    })
+    return normalizeDiffList(result.data as SessionFileDiff[] | undefined)
+  }
+  const nextHeaders: Record<string, string> = {
+    ...headers(),
+    "x-opencode-directory": worktree,
+  }
+  const scopedClient = createOpencodeClient({
+    baseUrl: url(),
+    headers: nextHeaders,
+  })
+  const result = await scopedClient.session.diff({
+    path: { id: sessionID },
+  })
+  return normalizeDiffList(result.data as SessionFileDiff[] | undefined)
+}
+
+async function fetchDiffForSession(sessionID: string) {
+  const sessionWorktree = useSessions.getState().sessions.find((item) => item.id === sessionID)?.directory
+  if (sessionWorktree) {
+    try {
+      return mergeDiffs(await fetchDiffFromWorktree(sessionID, sessionWorktree))
+    } catch {
+      // fallback below
+    }
+  }
+
+  const currentWorktree = headers()["x-opencode-directory"]
+  return mergeDiffs(await fetchDiffFromWorktree(sessionID, currentWorktree || undefined))
 }
 
 function toErrorMessage(error: unknown): string {
@@ -100,10 +184,7 @@ export const useDiffs = createStore<DiffState>((set, get) => ({
     }))
 
     try {
-      const result = await client().session.diff({
-        path: { id: sessionID },
-      })
-      const normalized = normalizeDiffList(result.data as SessionFileDiff[] | undefined)
+      const normalized = await fetchDiffForSession(sessionID)
       set((prev) => ({
         bySession: {
           ...prev.bySession,
@@ -137,10 +218,11 @@ export const useDiffs = createStore<DiffState>((set, get) => ({
   },
 
   setSessionDiff: (sessionID, diff) => {
+    const normalized = mergeDiffs(normalizeDiffList(diff))
     set((prev) => ({
       bySession: {
         ...prev.bySession,
-        [sessionID]: normalizeDiffList(diff),
+        [sessionID]: normalized,
       },
       loading: {
         ...prev.loading,

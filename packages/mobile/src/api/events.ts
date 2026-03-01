@@ -7,6 +7,7 @@ import { useRequests } from "../store/requests"
 import { useConnection } from "../store/connection"
 import { useDiffs } from "../store/diffs"
 import { markStreamFlush } from "../perf/chat-metrics"
+import { streamFlushPolicy } from "../config/feature-flags"
 
 // Opt-in debug flag for SSE diagnostics on device:
 // globalThis.__OPENCODE_MOBILE_SSE_DEBUG__ = true
@@ -38,8 +39,8 @@ type MessageEvent =
   | Extract<Event, { type: "message.part.removed" }>
   | MessagePartDeltaEvent
 
+const STREAM_FLUSH_POLICY = streamFlushPolicy()
 const EVENT_FLUSH_FALLBACK_MS = Platform.OS === "ios" ? 18 : 24
-const MIN_FLUSH_INTERVAL_MS = Platform.OS === "ios" ? 12 : 16
 const STALL_WATCHDOG_INTERVAL_MS = 5_000
 const STALL_TIMEOUT_MS = 30_000
 const IDLE_MESSAGE_RESYNC_LIMIT = 80
@@ -139,7 +140,15 @@ function applyBatch(events: AppEvent[]) {
             })
           break
         case "session.diff":
-          diffs.setSessionDiff(event.properties.sessionID, event.properties.diff)
+          {
+            const payload = event.properties as { diff?: unknown; diffs?: unknown }
+            const nextDiff = Array.isArray(payload.diff)
+              ? payload.diff
+              : Array.isArray(payload.diffs)
+                ? payload.diffs
+                : []
+            diffs.setSessionDiff(event.properties.sessionID, nextDiff as never[])
+          }
           break
         case "message.updated":
         case "message.removed":
@@ -171,6 +180,60 @@ function applyBatch(events: AppEvent[]) {
 
   if (messageEvents.length > 0) {
     messages._applyEvents(messageEvents)
+  }
+}
+
+function coalesceDeltaBatch(events: AppEvent[]) {
+  if (!STREAM_FLUSH_POLICY.coalesceDeltaByKey) {
+    const deltaEvents = events.reduce((acc, event) => (event.type === "message.part.delta" ? acc + 1 : acc), 0)
+    return {
+      events,
+      merged: 0,
+      deltaEvents,
+    }
+  }
+
+  const merged: AppEvent[] = []
+  const indexByKey = new Map<string, number>()
+  let mergedCount = 0
+  let deltaEvents = 0
+
+  for (const event of events) {
+    if (!isPartDeltaEvent(event)) {
+      merged.push(event)
+      continue
+    }
+
+    deltaEvents += 1
+    const key = deltaKey(event)
+    const existingIndex = indexByKey.get(key)
+    if (existingIndex === undefined) {
+      indexByKey.set(key, merged.length)
+      merged.push({
+        ...event,
+        properties: { ...event.properties },
+      })
+      continue
+    }
+
+    const existing = merged[existingIndex]
+    if (!existing || !isPartDeltaEvent(existing)) {
+      indexByKey.set(key, merged.length)
+      merged.push({
+        ...event,
+        properties: { ...event.properties },
+      })
+      continue
+    }
+
+    existing.properties.delta += event.properties.delta
+    mergedCount += 1
+  }
+
+  return {
+    events: merged,
+    merged: mergedCount,
+    deltaEvents,
   }
 }
 
@@ -218,6 +281,7 @@ function connect(current: Subscriber): Promise<void> {
     let raf: number | null = null
     let watchdog: ReturnType<typeof setInterval> | null = null
     let lastFlushAt = 0
+    let adaptiveFlushMs = STREAM_FLUSH_POLICY.minMs
     let lastProgressAt = Date.now()
     let pendingMergedDeltaChunks = 0
 
@@ -230,18 +294,28 @@ function connect(current: Subscriber): Promise<void> {
         clearTimeout(timer)
         timer = null
       }
-      const batch = queue.splice(0)
-      if (batch.length === 0) {
+      const queued = queue.splice(0)
+      if (queued.length === 0) {
         pendingMergedDeltaChunks = 0
         return
       }
-      lastFlushAt = Date.now()
+
+      const { events: batch, merged, deltaEvents } = coalesceDeltaBatch(queued)
+      const start = globalThis.performance?.now?.() ?? Date.now()
       applyBatch(batch)
-      const deltaEvents = batch.reduce((acc, event) => (event.type === "message.part.delta" ? acc + 1 : acc), 0)
+      const elapsed = (globalThis.performance?.now?.() ?? Date.now()) - start
+      lastFlushAt = Date.now()
+
+      if (elapsed > STREAM_FLUSH_POLICY.budgetMs) {
+        adaptiveFlushMs = Math.min(STREAM_FLUSH_POLICY.maxMs, adaptiveFlushMs + 4)
+      } else if (queue.length < 20) {
+        adaptiveFlushMs = Math.max(STREAM_FLUSH_POLICY.minMs, adaptiveFlushMs - 1)
+      }
+
       markStreamFlush({
         batchSize: batch.length,
         deltaEvents,
-        mergedDeltaChunks: pendingMergedDeltaChunks,
+        mergedDeltaChunks: pendingMergedDeltaChunks + merged,
       })
       pendingMergedDeltaChunks = 0
     }
@@ -249,7 +323,7 @@ function connect(current: Subscriber): Promise<void> {
     function scheduleFlush() {
       if (raf !== null || timer) return
       const elapsed = Date.now() - lastFlushAt
-      const waitMs = elapsed >= MIN_FLUSH_INTERVAL_MS ? 0 : MIN_FLUSH_INTERVAL_MS - elapsed
+      const waitMs = elapsed >= adaptiveFlushMs ? 0 : adaptiveFlushMs - elapsed
       const canUseRaf = typeof requestAnimationFrame === "function" && typeof cancelAnimationFrame === "function"
 
       if (waitMs > 0 || !canUseRaf) {
@@ -325,6 +399,11 @@ function connect(current: Subscriber): Promise<void> {
         const result = coalesce(queue, event)
         if (result.mergedDeltaChunk) {
           pendingMergedDeltaChunks += 1
+        }
+        if (queue.length > 160) {
+          adaptiveFlushMs = STREAM_FLUSH_POLICY.maxMs
+        } else if (queue.length > 80) {
+          adaptiveFlushMs = Math.min(STREAM_FLUSH_POLICY.maxMs, adaptiveFlushMs + 2)
         }
         scheduleFlush()
       }

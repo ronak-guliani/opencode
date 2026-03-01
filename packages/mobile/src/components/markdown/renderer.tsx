@@ -1,8 +1,9 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from "react"
-import { Linking, StyleSheet, Text, type TextStyle, type ViewStyle, View } from "react-native"
+import { Linking, Platform, StyleSheet, Text, type TextStyle, type ViewStyle, View } from "react-native"
 import MarkdownBase from "react-native-markdown-display"
 import { StreamdownRN } from "streamdown-rn"
 import { useTheme, type Theme } from "../../theme"
+import { FEATURE_FLAGS } from "../../config/feature-flags"
 import { CodeBlock } from "./code-block"
 
 type Props = {
@@ -16,6 +17,8 @@ const TYPED_STREAM_TICK_MS = 12
 const TYPED_STREAM_BASE_CPS = 92
 const TYPED_STREAM_MAX_CPS = 560
 const TYPED_STREAM_SAFE_MAX_CHARS = 1_600
+const TYPED_STREAM_SAFE_MAX_CHARS_IOS = 900
+const TYPED_STREAM_LAG_BAILOUT_IOS = 520
 const COMPLEX_MARKDOWN_PATTERN = /```|`|^\s{0,3}(?:[-*+]\s|\d+\.\s|>\s|#{1,6}\s)|^\s*\|.*\|/m
 
 const Streamdown = StreamdownRN as React.ComponentType<{
@@ -65,7 +68,11 @@ function clamp(value: number, min: number, max: number) {
 function allowTypedStreaming(input: string, variant: "default" | "reasoning", isComplete: boolean) {
   if (variant !== "default") return false
   if (isComplete) return false
-  if (input.length > TYPED_STREAM_SAFE_MAX_CHARS) return false
+  const maxChars =
+    Platform.OS === "ios" && FEATURE_FLAGS.iosAggressiveTypedStreamingGate
+      ? TYPED_STREAM_SAFE_MAX_CHARS_IOS
+      : TYPED_STREAM_SAFE_MAX_CHARS
+  if (input.length > maxChars) return false
   if (COMPLEX_MARKDOWN_PATTERN.test(input)) return false
   return true
 }
@@ -112,6 +119,10 @@ function useTypedStreamingText(input: string, opts: { enabled: boolean; isComple
     if (!target || target.length <= current.length) return
 
     const lag = target.length - current.length
+    if (Platform.OS === "ios" && FEATURE_FLAGS.iosAggressiveTypedStreamingGate && lag > TYPED_STREAM_LAG_BAILOUT_IOS) {
+      syncDisplayed(target)
+      return
+    }
     if (isCompleteRef.current || target.length > TYPED_STREAM_MAX_CHARS) {
       syncDisplayed(target)
       return

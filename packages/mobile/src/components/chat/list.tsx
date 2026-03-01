@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Platform, StyleSheet, Pressable, Text, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native"
+import { Platform, StyleSheet, Pressable, View, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native"
+import Feather from "@expo/vector-icons/Feather"
 import { useRouter } from "expo-router"
 import type { Message } from "@opencode-ai/sdk/client"
+import { LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list"
 import { useReanimatedKeyboardAnimation } from "react-native-keyboard-controller"
@@ -9,26 +11,38 @@ import Animated, { useAnimatedStyle } from "react-native-reanimated"
 import { useMessages } from "../../store/messages"
 import { useSessions } from "../../store/sessions"
 import { computeSummary, useDiffs } from "../../store/diffs"
-import type { DiffSummary, SessionFileDiff } from "../../features/diff/types"
+import type { SessionFileDiff } from "../../features/diff/types"
+import { synthesizeSessionDiff } from "../../features/diff/synthetic"
+import { resolveDiffLineCounts } from "../../features/diff/counts"
 import { addCrashBreadcrumb } from "../../perf/crash-breadcrumbs"
+import { useSessionDiffSummary, useSessionPartsMap } from "../../api/hooks"
+import { FEATURE_FLAGS } from "../../config/feature-flags"
 import { useChat } from "./provider"
 import { useTheme } from "../../theme"
 import { UserMessage } from "./user-message"
 import { AssistantMessage } from "./assistant-message"
 import { DiffSummaryCard } from "./diff-summary-card"
+import {
+  hasChanges,
+  resolveEffectiveSessionData,
+  resolveFootersByAssistant,
+  resolveSessionFooterMeta,
+  resolveTurnDiffs,
+  resolveTurnFooterMeta,
+  type DiffFooterMeta,
+} from "./diff-ui-logic"
 
 const STREAM_AUTOFOLLOW_MIN_GROWTH = 8
 const JUMP_TO_BOTTOM_DISTANCE = 320
 const AnimatedView = Animated.View as React.ComponentType<{ style?: unknown; children?: React.ReactNode }>
+const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string; style?: unknown }>
+const Glass = LiquidGlassView as React.ComponentType<{
+  interactive?: boolean
+  style?: unknown
+  children?: React.ReactNode
+}>
 const EMPTY_DIFFS: SessionFileDiff[] = []
-
-type DiffFooterMeta = {
-  diffs: SessionFileDiff[]
-  summary: DiffSummary
-  isUpdating: boolean
-  mode: "session" | "turn"
-  turnMessageID?: string
-}
+const EMPTY_DIFF_FOOTERS: DiffFooterMeta[] = []
 
 type Props = {
   sessionId: string
@@ -44,20 +58,48 @@ function asNumber(value: unknown) {
   return Number.isFinite(value) ? Number(value) : 0
 }
 
+function resolveFilePath(diff: Record<string, unknown>) {
+  const candidates = [
+    diff.file,
+    diff.path,
+    diff.filePath,
+    diff.filepath,
+    diff.relativePath,
+    diff.filename,
+    diff.name,
+  ]
+  for (const candidate of candidates) {
+    const value = asString(candidate).trim()
+    if (value) return value
+  }
+  return ""
+}
+
 function normalizeDiffEntry(input: unknown): SessionFileDiff | null {
-  const diff = (input && typeof input === "object" ? input : {}) as Partial<SessionFileDiff>
-  const file = asString(diff?.file).trim()
+  const diff = (input && typeof input === "object" ? input : {}) as Record<string, unknown>
+  const file = resolveFilePath(diff)
   if (!file) return null
-  const before = asString(diff?.before)
-  const after = asString(diff?.after)
+  const before = asString(diff.before)
+  const after = asString(diff.after)
+  const providedAdditions = Math.max(0, asNumber(diff.additions))
+  const providedDeletions = Math.max(0, asNumber(diff.deletions))
+  const status = asString(diff.status || diff.type) || undefined
+  const { additions, deletions } = resolveDiffLineCounts({
+    file,
+    before,
+    after,
+    additions: providedAdditions,
+    deletions: providedDeletions,
+    status,
+  })
 
   return {
     file,
     before,
     after,
-    additions: Math.max(0, asNumber(diff?.additions)),
-    deletions: Math.max(0, asNumber(diff?.deletions)),
-    status: asString(diff?.status) || undefined,
+    additions,
+    deletions,
+    status,
   }
 }
 
@@ -85,8 +127,13 @@ function dedupeDiffs(input: SessionFileDiff[]): SessionFileDiff[] {
   return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file))
 }
 
-function hasChanges(summary: DiffSummary) {
-  return summary.files > 0 || summary.additions > 0 || summary.deletions > 0
+function normalizeDiffList(input: unknown): SessionFileDiff[] {
+  if (!Array.isArray(input) || input.length === 0) return EMPTY_DIFFS
+  const normalized = input
+    .map((item) => normalizeDiffEntry(item))
+    .filter((item): item is SessionFileDiff => !!item)
+  if (normalized.length === 0) return EMPTY_DIFFS
+  return dedupeDiffs(normalized)
 }
 
 export function MessagesList({ sessionId, messages, topPadding }: Props) {
@@ -102,7 +149,9 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   const isBusy = useSessions(useCallback((s) => s.statuses[sessionId]?.type === "busy", [sessionId]))
   const fetchSessionDiff = useDiffs((s) => s.fetchSessionDiff)
   const sessionDiffs = useDiffs(useCallback((s) => s.bySession[sessionId] ?? EMPTY_DIFFS, [sessionId]))
+  const sessionDiffLoading = useDiffs(useCallback((s) => s.loading[sessionId] ?? false, [sessionId]))
   const sessionDiffFetchedAt = useDiffs(useCallback((s) => s.fetchedAt[sessionId] ?? 0, [sessionId]))
+  const partsByMessage = useSessionPartsMap(sessionId)
   const [showJump, setShowJump] = useState(false)
 
   const didInitialScroll = useRef(false)
@@ -153,8 +202,16 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
       .filter((item): item is SessionFileDiff => !!item)
     return dedupeDiffs(normalized)
   }, [sessionDiffs])
+  const hasRenderableSessionDiffs = apiDiffs.length > 0
+  const includeSyntheticFallback = !isBusy && !hasRenderableSessionDiffs && messages.length > 0
+  const {
+    historyDiffs: sessionHistoryDiffs,
+    historySummary: sessionHistorySummary,
+    syntheticDiffs: syntheticSessionDiffs,
+    syntheticSummary: syntheticSessionSummary,
+  } = useSessionDiffSummary(sessionId, { includeSynthetic: includeSyntheticFallback })
 
-  const mergedSessionDiffs = useMemo(() => dedupeDiffs(apiDiffs), [apiDiffs])
+  const mergedSessionDiffs = apiDiffs
   const mergedSessionSummary = useMemo(() => computeSummary(mergedSessionDiffs), [mergedSessionDiffs])
 
   const sessionSummary = useMemo(
@@ -166,16 +223,52 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     [session?.summary?.additions, session?.summary?.deletions, session?.summary?.files],
   )
 
+  const { diffs: effectiveSessionDiffs, summary: effectiveSessionSummary } = useMemo(
+    () =>
+      resolveEffectiveSessionData({
+        apiDiffs: mergedSessionDiffs,
+        apiSummary: mergedSessionSummary,
+        historyDiffs: sessionHistoryDiffs,
+        historySummary: sessionHistorySummary,
+        syntheticDiffs: syntheticSessionDiffs,
+        syntheticSummary: syntheticSessionSummary,
+        sessionSummary,
+      }),
+    [
+      mergedSessionDiffs,
+      mergedSessionSummary,
+      sessionHistoryDiffs,
+      sessionHistorySummary,
+      sessionSummary,
+      syntheticSessionDiffs,
+      syntheticSessionSummary,
+    ],
+  )
+
   useEffect(() => {
-    if (sessionDiffs.length > 0) return
-    if (!isBusy && !hasChanges(sessionSummary)) return
-    addCrashBreadcrumb("chat-list:auto-fetch-diff", { sessionID: sessionId })
-    void fetchSessionDiff(sessionId)
+    if (!sessionId) return
+    if (hasRenderableSessionDiffs) return
+
+    if (isBusy || hasChanges(sessionSummary) || hasChanges(sessionHistorySummary)) {
+      addCrashBreadcrumb("chat-list:auto-fetch-diff", { sessionID: sessionId, reason: "busy-or-summary" })
+      void fetchSessionDiff(sessionId)
+      return
+    }
+
+    const timer = setTimeout(() => {
+      addCrashBreadcrumb("chat-list:auto-fetch-diff", { sessionID: sessionId, reason: "deferred-old-session" })
+      void fetchSessionDiff(sessionId)
+    }, 220)
+
+    return () => clearTimeout(timer)
   }, [
     fetchSessionDiff,
+    hasRenderableSessionDiffs,
     isBusy,
-    sessionDiffs.length,
     sessionId,
+    sessionHistorySummary.additions,
+    sessionHistorySummary.deletions,
+    sessionHistorySummary.files,
     sessionSummary.additions,
     sessionSummary.deletions,
     sessionSummary.files,
@@ -186,27 +279,40 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     if (!latestAssistant || latestAssistant.role !== "assistant") return 0
     return Math.max(0, asNumber(latestAssistant.time?.created))
   }, [latestAssistant])
-  const latestTurnMessageID = useMemo(() => {
-    if (!latestAssistant || latestAssistant.role !== "assistant") return ""
-    return asString((latestAssistant as { parentID?: unknown }).parentID)
-  }, [latestAssistant])
 
-  const latestTurnDiffs = useMemo(() => {
-    if (!latestTurnMessageID) return EMPTY_DIFFS
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index] as { id?: unknown; role?: unknown; summary?: { diffs?: unknown } }
-      if (asString(message.id) !== latestTurnMessageID) continue
-      if (message.role !== "user") return EMPTY_DIFFS
-      if (!Array.isArray(message.summary?.diffs)) return EMPTY_DIFFS
-      const normalized = message.summary.diffs
-        .map((item) => normalizeDiffEntry(item))
-        .filter((item): item is SessionFileDiff => !!item)
-      return dedupeDiffs(normalized)
+  const assistantMessagesByParentID = useMemo(() => {
+    const result = new Map<string, Message[]>()
+    for (const message of messages) {
+      if (!message || message.role !== "assistant") continue
+      const parentID = asString((message as { parentID?: unknown }).parentID)
+      if (!parentID) continue
+      const existing = result.get(parentID)
+      if (existing) existing.push(message)
+      else result.set(parentID, [message])
     }
-    return EMPTY_DIFFS
-  }, [latestTurnMessageID, messages])
+    return result
+  }, [messages])
 
-  const latestTurnSummary = useMemo(() => computeSummary(latestTurnDiffs), [latestTurnDiffs])
+  const userMessagesByID = useMemo(() => {
+    const result = new Map<string, Message>()
+    for (const message of messages) {
+      if (!message || message.role !== "user") continue
+      if (typeof message.id !== "string" || !message.id) continue
+      result.set(message.id, message)
+    }
+    return result
+  }, [messages])
+
+  const userSummaryDiffsByID = useMemo(() => {
+    const result = new Map<string, SessionFileDiff[]>()
+    for (const message of messages) {
+      if (!message || message.role !== "user") continue
+      if (typeof message.id !== "string" || !message.id) continue
+      const summaryDiffs = (message as { summary?: { diffs?: unknown } }).summary?.diffs
+      result.set(message.id, normalizeDiffList(summaryDiffs))
+    }
+    return result
+  }, [messages])
 
   useEffect(() => {
     if (!isBusy || !latestAssistantCreatedAt) return
@@ -219,42 +325,58 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     void fetchSessionDiff(sessionId, { force: true })
   }, [fetchSessionDiff, isBusy, latestAssistantCreatedAt, sessionDiffFetchedAt, sessionId])
 
-  const diffFooterByAssistantID = useMemo(() => {
+  const sessionFooterMeta = useMemo(
+    () =>
+      resolveSessionFooterMeta({
+        messageCount: count,
+        effectiveSessionDiffs,
+        effectiveSessionSummary,
+        isBusy,
+        sessionDiffLoading,
+      }),
+    [count, effectiveSessionDiffs, effectiveSessionSummary, isBusy, sessionDiffLoading],
+  )
+
+  const turnFooterByAssistantID = useMemo(() => {
     const result = new Map<string, DiffFooterMeta>()
-    if (!latestAssistant || latestAssistant.role !== "assistant") return result
-    if (typeof latestAssistant.id !== "string" || !latestAssistant.id) return result
+    for (const [parentID, assistants] of assistantMessagesByParentID.entries()) {
+      if (!parentID || assistants.length === 0) continue
+      const targetAssistant = assistants[assistants.length - 1]
+      if (!targetAssistant || typeof targetAssistant.id !== "string" || !targetAssistant.id) continue
 
-    if (hasChanges(latestTurnSummary)) {
-      result.set(latestAssistant.id, {
-        diffs: latestTurnDiffs,
-        summary: latestTurnSummary,
-        isUpdating: isBusy,
-        mode: "turn",
-        turnMessageID: latestTurnMessageID || undefined,
+      const summaryDiffs = userSummaryDiffsByID.get(parentID) ?? EMPTY_DIFFS
+      let syntheticDiffs = EMPTY_DIFFS
+      const userMessage = userMessagesByID.get(parentID)
+      if (userMessage) {
+        try {
+          syntheticDiffs = normalizeDiffList(synthesizeSessionDiff([userMessage, ...assistants], partsByMessage))
+        } catch {
+          syntheticDiffs = EMPTY_DIFFS
+        }
+      }
+
+      const turnDiffs = resolveTurnDiffs(summaryDiffs, syntheticDiffs, { preferSynthetic: true })
+      const turnSummary = computeSummary(turnDiffs)
+      const turnFooterMeta = resolveTurnFooterMeta({
+        latestTurnDiffs: turnDiffs,
+        latestTurnSummary: turnSummary,
+        latestTurnMessageID: parentID,
+        isBusy,
       })
-      return result
+      if (turnFooterMeta) result.set(targetAssistant.id, turnFooterMeta)
     }
-
-    if (!isBusy || !hasChanges(mergedSessionSummary)) return result
-    if (!latestAssistantCreatedAt || sessionDiffFetchedAt < latestAssistantCreatedAt) return result
-    result.set(latestAssistant.id, {
-      diffs: mergedSessionDiffs,
-      summary: mergedSessionSummary,
-      isUpdating: isBusy,
-      mode: "session",
-    })
     return result
-  }, [
-    isBusy,
-    latestAssistant,
-    latestAssistantCreatedAt,
-    latestTurnDiffs,
-    latestTurnMessageID,
-    latestTurnSummary,
-    mergedSessionDiffs,
-    mergedSessionSummary,
-    sessionDiffFetchedAt,
-  ])
+  }, [assistantMessagesByParentID, isBusy, partsByMessage, userMessagesByID, userSummaryDiffsByID])
+
+  const diffFootersByAssistantID = useMemo(() => {
+    const latestAssistantID =
+      latestAssistant && latestAssistant.role === "assistant" && typeof latestAssistant.id === "string" ? latestAssistant.id : ""
+    return resolveFootersByAssistant({
+      turnFooterByAssistantID,
+      latestAssistantID,
+      sessionFooterMeta,
+    })
+  }, [latestAssistant, sessionFooterMeta, turnFooterByAssistantID])
 
   const openDiff = useCallback(
     (meta: DiffFooterMeta) => {
@@ -344,19 +466,26 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
           logMalformedMessage("render-assistant-missing-id", item, index)
           return null
         }
-        const footerMeta = diffFooterByAssistantID.get(item.id)
+        const footerMetas = diffFootersByAssistantID.get(item.id) ?? EMPTY_DIFF_FOOTERS
         return (
           <AssistantMessage
             message={item}
             showFooter={index === latestAssistantIndex}
             diffFooter={
-              footerMeta ? (
-                <DiffSummaryCard
-                  diffs={footerMeta.diffs}
-                  summary={footerMeta.summary}
-                  isUpdating={footerMeta.isUpdating}
-                  onPress={() => openDiff(footerMeta)}
-                />
+              footerMetas.length > 0 ? (
+                <View style={styles.diffFooterStack}>
+                  {footerMetas.map((meta, footerIndex) => (
+                    <DiffSummaryCard
+                      key={`${meta.mode}:${meta.turnMessageID || "session"}:${footerIndex}`}
+                      mode={meta.mode}
+                      title={meta.mode === "turn" ? "Turn diff" : "Session diff"}
+                      diffs={meta.diffs}
+                      summary={meta.summary}
+                      isUpdating={meta.isUpdating}
+                      onPress={() => openDiff(meta)}
+                    />
+                  ))}
+                </View>
               ) : null
             }
           />
@@ -364,7 +493,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
       }
       return null
     },
-    [diffFooterByAssistantID, latestAssistantIndex, logMalformedMessage, openDiff],
+    [diffFootersByAssistantID, latestAssistantIndex, logMalformedMessage, openDiff],
   )
 
   const keyExtractor = useCallback((item: Message, index: number) => {
@@ -465,9 +594,10 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   }, [count, isBusy])
 
   const drawDistance = useMemo(() => {
-    if (isBusy) return Platform.OS === "ios" ? 900 : 600
-    return Platform.OS === "ios" ? 420 : 360
+    if (isBusy) return Platform.OS === "ios" ? 620 : 600
+    return Platform.OS === "ios" ? 320 : 360
   }, [isBusy])
+  const jumpBottom = Math.max(composerH + 14, insets.bottom + 60)
 
   const onListLoad = useCallback(() => {
     const firstLoad = !didInitialScroll.current
@@ -523,29 +653,61 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         maintainVisibleContentPosition={maintainVisibleContentPosition}
-        removeClippedSubviews={Platform.OS !== "ios"}
+        removeClippedSubviews={Platform.OS === "ios" ? FEATURE_FLAGS.iosClippedSubviews : true}
+        ListFooterComponent={
+          !latestAssistant && sessionFooterMeta ? (
+            <DiffSummaryCard
+              mode="session"
+              title="Session diff"
+              diffs={sessionFooterMeta.diffs}
+              summary={sessionFooterMeta.summary}
+              isUpdating={sessionFooterMeta.isUpdating}
+              onPress={() => openDiff(sessionFooterMeta)}
+            />
+          ) : null
+        }
       />
       {showJump ? (
-        <Pressable
-          style={[
-            styles.jumpButton,
-            {
-              bottom: Math.max(composerH + 14, insets.bottom + 60),
-              backgroundColor: theme.colors.surfaceRaised,
-              borderColor: theme.colors.border,
-            },
-          ]}
-          onPress={() => {
-            userInteractingRef.current = false
-            momentumActiveRef.current = false
-            scheduleScrollToEnd(false)
-          }}
-          accessibilityRole="button"
-          accessibilityLabel="Scroll to bottom"
-          hitSlop={8}
-        >
-          <Text style={[styles.jumpGlyph, { color: theme.colors.text }]}>{"\u2193"}</Text>
-        </Pressable>
+        isLiquidGlassSupported ? (
+          <Glass interactive style={[styles.jumpGlass, { bottom: jumpBottom }]}>
+            <Pressable
+              style={({ pressed }) => [styles.jumpButton, pressed && styles.jumpPressed]}
+              onPress={() => {
+                userInteractingRef.current = false
+                momentumActiveRef.current = false
+                scheduleScrollToEnd(false)
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Scroll to bottom"
+              hitSlop={8}
+            >
+              <FeatherIcon style={styles.jumpIcon} name="chevron-down" size={17} color={theme.colors.text} />
+            </Pressable>
+          </Glass>
+        ) : (
+          <Pressable
+            style={[
+              styles.jumpAbsolute,
+              styles.jumpButton,
+              styles.jumpButtonFallback,
+              {
+                bottom: jumpBottom,
+                backgroundColor: theme.colors.surfaceRaised,
+                borderColor: theme.colors.border,
+              },
+            ]}
+            onPress={() => {
+              userInteractingRef.current = false
+              momentumActiveRef.current = false
+              scheduleScrollToEnd(false)
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Scroll to bottom"
+            hitSlop={8}
+          >
+            <FeatherIcon style={styles.jumpIcon} name="chevron-down" size={17} color={theme.colors.text} />
+          </Pressable>
+        )
       ) : null}
     </AnimatedView>
   )
@@ -562,19 +724,35 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: 16,
   },
-  jumpButton: {
+  diffFooterStack: {
+    gap: 2,
+  },
+  jumpGlass: {
     position: "absolute",
     right: 20,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: StyleSheet.hairlineWidth,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    overflow: "hidden",
+  },
+  jumpButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: "center",
     justifyContent: "center",
   },
-  jumpGlyph: {
-    fontSize: 17,
-    lineHeight: 18,
-    fontWeight: "700",
+  jumpAbsolute: {
+    position: "absolute",
+    right: 20,
+  },
+  jumpButtonFallback: {
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  jumpIcon: {
+    marginTop: 0.5,
+  },
+  jumpPressed: {
+    opacity: 0.6,
   },
 })

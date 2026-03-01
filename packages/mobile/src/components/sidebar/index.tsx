@@ -1,18 +1,12 @@
 import { useCallback, useEffect, useMemo, memo, useRef, useState } from "react"
-import {
-  View,
-  Text,
-  TextInput,
-  Pressable,
-  StyleSheet,
-  RefreshControl,
-  Alert,
-} from "react-native"
+import { View, Text, TextInput, Pressable, StyleSheet, RefreshControl, Alert } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
 import * as ZeegoContextMenu from "zeego/context-menu"
 import * as Haptics from "expo-haptics"
 import * as Clipboard from "expo-clipboard"
+import Feather from "@expo/vector-icons/Feather"
+import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons"
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list"
 import type { Project, Session } from "@opencode-ai/sdk/client"
 import { useSessions } from "../../store/sessions"
@@ -20,6 +14,7 @@ import { useConnection } from "../../store/connection"
 import { useTheme } from "../../theme"
 import { relative } from "../../util/format"
 import { SessionListSkeleton } from "../skeleton"
+import { AnimatedStatusDot } from "../status-dot"
 import { client } from "../../api/client"
 import { addCrashBreadcrumb } from "../../perf/crash-breadcrumbs"
 import { ServerSwitcher } from "./server-switcher"
@@ -51,9 +46,21 @@ const Glass = LiquidGlassView as React.ComponentType<{
   style?: unknown
   children?: React.ReactNode
 }>
+const FeatherIcon = Feather as unknown as React.ComponentType<{
+  name: string
+  size: number
+  color: string
+  style?: unknown
+}>
 const SIDEBAR_DRAW_DISTANCE = 700
 const SESSION_RENDER_CHUNK = 20
 const SESSION_SELECT_DEBOUNCE_MS = 280
+const MaterialIcon = MaterialCommunityIcons as unknown as React.ComponentType<{
+  name: string
+  size: number
+  color: string
+  style?: unknown
+}>
 
 type Props = {
   onSelect: (session: Session) => void | Promise<void>
@@ -281,7 +288,7 @@ export const Sidebar = memo(function Sidebar({
 
       {isLiquidGlassSupported ? (
         <Glass interactive style={styles.searchGlass}>
-          <SearchIcon color={theme.colors.textTertiary} />
+          <FeatherIcon style={styles.searchIcon} name="search" size={14} color={theme.colors.textTertiary} />
           <TextInput
             style={[styles.searchInput, { color: theme.colors.text }]}
             value={query}
@@ -304,7 +311,7 @@ export const Sidebar = memo(function Sidebar({
             },
           ]}
         >
-          <SearchIcon color={theme.colors.textTertiary} />
+          <FeatherIcon style={styles.searchIcon} name="search" size={14} color={theme.colors.textTertiary} />
           <TextInput
             style={[styles.searchInput, { color: theme.colors.text }]}
             value={query}
@@ -386,12 +393,16 @@ const ProjectRow = memo(function ProjectRow({
     >
       <View style={styles.projectMain}>
         <View style={styles.projectTitleRow}>
-          <FolderIcon color={theme.colors.textSecondary} />
+          <FeatherIcon name="folder" size={14} color={theme.colors.textSecondary} />
           <Text style={[styles.projectTitle, { color: theme.colors.text }]} numberOfLines={1}>
             {name}
           </Text>
         </View>
-        <Text style={[styles.projectPath, { color: theme.colors.textTertiary }]} numberOfLines={1} ellipsizeMode="middle">
+        <Text
+          style={[styles.projectPath, { color: theme.colors.textTertiary }]}
+          numberOfLines={1}
+          ellipsizeMode="middle"
+        >
           {item.project.worktree}
         </Text>
       </View>
@@ -404,10 +415,15 @@ const ProjectRow = memo(function ProjectRow({
           }}
           hitSlop={8}
         >
-          <PlusIcon color={theme.colors.textSecondary} />
+          <FeatherIcon name="plus" size={14} color={theme.colors.textSecondary} />
         </Pressable>
         <Text style={[styles.projectCount, { color: theme.colors.textTertiary }]}>{item.count}</Text>
-        <Text style={[styles.chevronGlyph, { color: theme.colors.textSecondary }]}>{item.collapsed ? "›" : "⌄"}</Text>
+        <FeatherIcon
+          style={styles.chevronGlyph}
+          name={item.collapsed ? "chevron-right" : "chevron-down"}
+          size={14}
+          color={theme.colors.textSecondary}
+        />
       </View>
     </Pressable>
   )
@@ -450,7 +466,10 @@ const ProjectSection = memo(function ProjectSection({
       {!item.collapsed && item.sessions.length > 0 ? (
         <View style={[styles.sessionGroup, { borderLeftColor: theme.colors.borderSubtle }]}>
           {visibleSessions.map((session, index) => (
-            <View key={session.id} style={[styles.sessionSlot, index === visibleSessions.length - 1 && styles.sessionSlotLast]}>
+            <View
+              key={session.id}
+              style={[styles.sessionSlot, index === visibleSessions.length - 1 && styles.sessionSlotLast]}
+            >
               <SessionRow
                 session={session}
                 onSelect={onSelect}
@@ -578,15 +597,19 @@ const HeaderIconButton = memo(function HeaderIconButton({
 }) {
   const theme = useTheme()
   const color = theme.colors.textSecondary
+  const iconName =
+    icon === "compose"
+      ? "edit-3"
+      : icon === "collapse-all"
+        ? "chevrons-up"
+        : icon === "expand-all"
+          ? "chevrons-down"
+          : "settings"
   const iconNode =
     icon === "compose" ? (
-      <ComposeIcon color={color} />
-    ) : icon === "collapse-all" ? (
-      <CollapseAllIcon color={color} mode="collapse" />
-    ) : icon === "expand-all" ? (
-      <CollapseAllIcon color={color} mode="expand" />
+      <MaterialIcon style={styles.composeSymbol} name="square-edit-outline" size={16} color={color} />
     ) : (
-      <Text style={[styles.settingsGlyph, { color }]}>⚙︎</Text>
+      <FeatherIcon name={iconName} size={14} color={color} />
     )
 
   if (isLiquidGlassSupported) {
@@ -620,59 +643,6 @@ const HeaderIconButton = memo(function HeaderIconButton({
     >
       {iconNode}
     </Pressable>
-  )
-})
-
-const FolderIcon = memo(function FolderIcon({ color }: { color: string }) {
-  return (
-    <View style={styles.folderIcon}>
-      <View style={[styles.folderTab, { borderColor: color }]} />
-      <View style={[styles.folderBody, { borderColor: color }]} />
-    </View>
-  )
-})
-
-const PlusIcon = memo(function PlusIcon({ color }: { color: string }) {
-  return (
-    <View style={styles.plusIcon}>
-      <View style={[styles.plusHorizontal, { backgroundColor: color }]} />
-      <View style={[styles.plusVertical, { backgroundColor: color }]} />
-    </View>
-  )
-})
-
-const ComposeIcon = memo(function ComposeIcon({ color }: { color: string }) {
-  return (
-    <View style={styles.composeIcon}>
-      <View style={[styles.composeBox, { borderColor: color }]} />
-      <View style={[styles.composePencilShaft, { backgroundColor: color }]} />
-      <View style={[styles.composePencilTip, { borderLeftColor: color }]} />
-    </View>
-  )
-})
-
-const SearchIcon = memo(function SearchIcon({ color }: { color: string }) {
-  return (
-    <View style={styles.searchGlyph}>
-      <View style={[styles.searchGlyphCircle, { borderColor: color }]} />
-      <View style={[styles.searchGlyphHandle, { backgroundColor: color }]} />
-    </View>
-  )
-})
-
-const CollapseAllIcon = memo(function CollapseAllIcon({
-  color,
-  mode,
-}: {
-  color: string
-  mode: "collapse" | "expand"
-}) {
-  return (
-    <View style={styles.collapseAllIcon}>
-      <View style={[styles.collapseLine, { backgroundColor: color }]} />
-      <View style={[styles.collapseLine, { backgroundColor: color }]} />
-      <Text style={[styles.collapseChevron, { color }]}>{mode === "collapse" ? "⌃" : "⌄"}</Text>
-    </View>
   )
 })
 
@@ -722,6 +692,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
+  },
+  composeSymbol: {
+    marginTop: 0.5,
   },
   searchContainer: {
     marginHorizontal: 16,
@@ -866,131 +839,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   chevronGlyph: {
-    width: 10,
-    fontSize: 16,
-    lineHeight: 16,
+    width: 14,
     textAlign: "center",
   },
-  settingsGlyph: {
-    fontSize: 14,
-    fontWeight: "600",
-    lineHeight: 16,
-  },
-  folderIcon: {
-    width: 16,
-    height: 12,
-  },
-  folderTab: {
-    position: "absolute",
-    top: 0,
-    left: 1,
-    width: 6,
-    height: 4,
-    borderWidth: 1,
-    borderBottomWidth: 0,
-    borderTopLeftRadius: 2,
-    borderTopRightRadius: 2,
-  },
-  folderBody: {
-    position: "absolute",
-    top: 3,
-    left: 0,
-    width: 16,
-    height: 9,
-    borderWidth: 1,
-    borderRadius: 2,
-  },
-  plusIcon: {
-    width: 14,
-    height: 14,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  plusHorizontal: {
-    position: "absolute",
-    width: 8,
-    height: 1.5,
-    borderRadius: 1,
-  },
-  plusVertical: {
-    position: "absolute",
-    width: 1.5,
-    height: 8,
-    borderRadius: 1,
-  },
-  composeIcon: {
-    width: 16,
-    height: 16,
-  },
-  composeBox: {
-    position: "absolute",
-    left: 1.2,
-    bottom: 1.2,
-    width: 10.8,
-    height: 10.8,
-    borderWidth: 1.4,
-    borderRadius: 2.4,
-  },
-  composePencilShaft: {
-    position: "absolute",
-    right: 0.6,
-    top: 1.2,
-    width: 9,
-    height: 1.7,
-    borderRadius: 1,
-    transform: [{ rotate: "-38deg" }],
-  },
-  composePencilTip: {
-    position: "absolute",
-    right: 6.8,
-    top: 4.9,
-    width: 0,
-    height: 0,
-    borderTopWidth: 1.8,
-    borderBottomWidth: 1.8,
-    borderRightWidth: 0,
-    borderLeftWidth: 2.8,
-    borderTopColor: "transparent",
-    borderBottomColor: "transparent",
-    transform: [{ rotate: "-38deg" }],
-  },
-  searchGlyph: {
-    width: 14,
-    height: 14,
+  searchIcon: {
     marginLeft: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  searchGlyphCircle: {
-    width: 9,
-    height: 9,
-    borderWidth: 1.5,
-    borderRadius: 5,
-  },
-  searchGlyphHandle: {
-    position: "absolute",
-    width: 5,
-    height: 1.5,
-    borderRadius: 1,
-    transform: [{ translateX: 4 }, { translateY: 4 }, { rotate: "45deg" }],
-  },
-  collapseAllIcon: {
-    width: 16,
-    height: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 2,
-  },
-  collapseLine: {
-    width: 10,
-    height: 1.5,
-    borderRadius: 1,
-  },
-  collapseChevron: {
-    position: "absolute",
-    bottom: -2,
-    fontSize: 10,
-    lineHeight: 10,
-    fontWeight: "700",
+    marginRight: 2,
   },
 })

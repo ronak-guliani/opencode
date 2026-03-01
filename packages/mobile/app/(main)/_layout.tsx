@@ -8,7 +8,6 @@ import { Sidebar } from "../../src/components/sidebar"
 import { ConnectionBanner } from "../../src/components/connection-banner"
 import { useTheme } from "../../src/theme"
 import { useSessions } from "../../src/store/sessions"
-import { useMessages } from "../../src/store/messages"
 import { useConnection } from "../../src/store/connection"
 import { useSidebar } from "../../src/store/sidebar"
 import { addCrashBreadcrumb } from "../../src/perf/crash-breadcrumbs"
@@ -60,6 +59,7 @@ export default function MainLayout() {
         if (!isTablet) setOpenIfChanged(false)
         return
       }
+      if (!isTablet) setOpenIfChanged(false)
       addCrashBreadcrumb("session-switch:start", {
         sessionID: session.id,
         toDirectory: session.directory,
@@ -78,8 +78,6 @@ export default function MainLayout() {
       }
       select(session.id)
       addCrashBreadcrumb("session-switch:selected", { sessionID: session.id })
-
-      if (!isTablet) setOpenIfChanged(false)
       addCrashBreadcrumb("session-switch:navigate", { sessionID: session.id })
       router.replace(`/(main)/session/${session.id}`)
     },
