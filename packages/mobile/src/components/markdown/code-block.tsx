@@ -51,6 +51,8 @@ export const CodeBlock = memo(function CodeBlock({ code, language }: Props) {
 type TokenType = "plain" | "comment" | "string" | "number" | "keyword"
 type Token = { type: TokenType; value: string }
 const HIGHLIGHT_CACHE_MAX = 180
+const HIGHLIGHT_FAST_PATH_MAX_CHARS = 4_800
+const HIGHLIGHT_FAST_PATH_MAX_LINES = 220
 const highlightCache = new Map<string, Token[]>()
 
 const KEYWORDS: Record<string, Set<string>> = {
@@ -183,6 +185,10 @@ function codeHash(value: string) {
 }
 
 function cachedHighlight(code: string, language: string) {
+  if (code.length > HIGHLIGHT_FAST_PATH_MAX_CHARS || countLines(code) > HIGHLIGHT_FAST_PATH_MAX_LINES) {
+    return [{ type: "plain" as const, value: code }]
+  }
+
   const key = `${language}:${codeHash(code)}:${code.length}`
   const cached = highlightCache.get(key)
   if (cached) {
@@ -199,6 +205,14 @@ function cachedHighlight(code: string, language: string) {
     highlightCache.delete(oldest)
   }
   return next
+}
+
+function countLines(value: string) {
+  let lines = 1
+  for (let i = 0; i < value.length; i += 1) {
+    if (value.charCodeAt(i) === 10) lines += 1
+  }
+  return lines
 }
 
 function highlight(code: string, language: string): Token[] {

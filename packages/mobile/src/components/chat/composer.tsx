@@ -8,13 +8,15 @@ import { SendMessageError, useMessages } from "../../store/messages"
 import { useIsSending, useSessionStatus } from "../../api/hooks"
 import { useChat } from "./provider"
 import { useTheme } from "../../theme"
+import { type TodoSnapshot, TodoPanel } from "./part"
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
 
 type Props = {
   sessionId: string
+  liveTodo?: TodoSnapshot | null
 }
 
-export function Composer({ sessionId }: Props) {
+export function Composer({ sessionId, liveTodo = null }: Props) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
   const [text, setText] = useState("")
@@ -91,26 +93,36 @@ export function Composer({ sessionId }: Props) {
       >
         <View
           style={[
-            styles.inputRow,
+            styles.composerCard,
             {
               backgroundColor: theme.colors.surface,
               borderColor: theme.colors.border + "99",
             },
           ]}
         >
-          <TextInput
-            style={[styles.input, { color: theme.colors.text }]}
-            value={text}
-            onChangeText={setText}
-            placeholder="Ask anything"
-            placeholderTextColor={theme.colors.textTertiary}
-            multiline
-            maxLength={100000}
-            editable={!sending}
-            returnKeyType="default"
-            blurOnSubmit={false}
-          />
-          {sendButton}
+          {liveTodo ? (
+            <>
+              <View style={styles.todoPinnedSection}>
+                <TodoPanel snapshot={liveTodo} variant="pinned" live />
+              </View>
+              <View style={[styles.todoDivider, { borderTopColor: theme.colors.border + "99" }]} />
+            </>
+          ) : null}
+          <View style={styles.inputRow}>
+            <TextInput
+              style={[styles.input, { color: theme.colors.text }]}
+              value={text}
+              onChangeText={setText}
+              placeholder="Ask anything"
+              placeholderTextColor={theme.colors.textTertiary}
+              multiline
+              maxLength={100000}
+              editable={!sending}
+              returnKeyType="default"
+              blurOnSubmit={false}
+            />
+            {sendButton}
+          </View>
         </View>
       </View>
     </Sticky>
@@ -133,10 +145,21 @@ const styles = StyleSheet.create({
       },
     }),
   },
-  inputRow: {
-    minHeight: 44,
+  composerCard: {
     borderWidth: 1,
     borderRadius: 24,
+    overflow: "hidden",
+  },
+  todoPinnedSection: {
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 12,
+  },
+  todoDivider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  inputRow: {
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "flex-end",
     paddingLeft: 14,

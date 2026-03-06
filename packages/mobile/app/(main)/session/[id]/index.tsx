@@ -1,5 +1,14 @@
-import { useEffect, useRef, useState, useCallback } from "react"
-import { AppState, type AppStateStatus, InteractionManager, View, StyleSheet, Pressable, Text, Alert } from "react-native"
+import { useEffect, useRef, useState, useCallback, useMemo } from "react"
+import {
+  AppState,
+  type AppStateStatus,
+  InteractionManager,
+  View,
+  StyleSheet,
+  Pressable,
+  Text,
+  Alert,
+} from "react-native"
 import { useLocalSearchParams, useRouter } from "expo-router"
 import Feather from "@expo/vector-icons/Feather"
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons"
@@ -11,7 +20,7 @@ import { useSessions } from "../../../../src/store/sessions"
 import { useSettings, modelName } from "../../../../src/store/settings"
 import { useRequests } from "../../../../src/store/requests"
 import { useConnection } from "../../../../src/store/connection"
-import { usePendingRequestCount, useSessionMessages } from "../../../../src/api/hooks"
+import { usePendingRequestCount, useSessionMessages, useSessionPartsMap } from "../../../../src/api/hooks"
 import { useTheme } from "../../../../src/theme"
 import { ChatProvider } from "../../../../src/components/chat/provider"
 import { MessagesList } from "../../../../src/components/chat/list"
@@ -22,6 +31,7 @@ import { ModelPicker } from "../../../../src/components/model-picker"
 import { DisableFadeProvider } from "../../../../src/animation"
 import { markChatFirstPaint, markChatInteractionReady, markChatOpenStart } from "../../../../src/perf/chat-metrics"
 import { addCrashBreadcrumb, readCrashBreadcrumbs } from "../../../../src/perf/crash-breadcrumbs"
+import { resolveLatestTodoSnapshot } from "../../../../src/components/chat/part"
 
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
 const REQUEST_POLL_BUSY_MS = 4_000
@@ -29,11 +39,17 @@ const REQUEST_POLL_PENDING_MS = 8_000
 const REQUEST_POLL_IDLE_MS = 45_000
 const MESSAGE_RESYNC_BUSY_MS = 3_000
 const MESSAGE_RESYNC_IDLE_MS = 12_000
+const LOADING_SKELETON_DELAY_MS = 140
 const SESSION_OPEN_LIMIT = 24
 const SESSION_PREFETCH_DELAY_MS = 550
 const SESSION_PREFETCH_NEIGHBORS = 2
 const SESSION_PREFETCH_LIMIT = 10
-const MaterialIcon = MaterialCommunityIcons as unknown as React.ComponentType<{ name: string; size: number; color: string; style?: unknown }>
+const MaterialIcon = MaterialCommunityIcons as unknown as React.ComponentType<{
+  name: string
+  size: number
+  color: string
+  style?: unknown
+}>
 
 export default function SessionScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
@@ -44,7 +60,6 @@ export default function SessionScreen() {
   const prefetch = useMessageStore((s) => s.prefetch)
   const loadingMessages = useMessageStore((s) => (id ? (s.loading[id] ?? false) : false))
   const loadedAt = useMessageStore((s) => (id ? (s.loadedAt[id] ?? 0) : 0))
-  const create = useSessions((s) => s.create)
   const session = useSessions((s) => (id ? s.sessions.find((item) => item.id === id) : undefined))
   const select = useSessions((s) => s.select)
   const refreshRequests = useRequests((s) => s.refresh)
@@ -55,11 +70,13 @@ export default function SessionScreen() {
   const activeModel = useSettings(modelName)
   const fetchProviders = useSettings((s) => s.fetchProviders)
   const messages = useSessionMessages(id)
+  const partsByMessage = useSessionPartsMap(id)
   const sessionStatus = useSessions((s) => (id ? s.statuses[id] : undefined))
   const title = (session?.title || "").trim() || "Untitled session"
   const titleLimit = Math.max(14, Math.min(34, 36 - Math.floor(activeModel.trim().length * 0.75)))
   const shortTitle = title.length > titleLimit ? `${title.slice(0, titleLimit).trimEnd()}…` : title
   const [pickerVisible, setPickerVisible] = useState(false)
+  const [showLoadingSkeleton, setShowLoadingSkeleton] = useState(false)
   // Track which sessions have been viewed — disable fade for revisited chats
   const seen = useRef(new Set<string>())
   const wasSeen = id ? seen.current.has(id) : false
@@ -67,6 +84,43 @@ export default function SessionScreen() {
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isBusy = sessionStatus?.type === "busy"
   const shouldShowLoadingState = messages.length === 0 && (loadingMessages || loadedAt === 0)
+  const liveTodo = useMemo(() => {
+    let end = -1
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const candidate = messages[i]
+      if (!candidate || candidate.role !== "assistant") continue
+      if (candidate.time.completed) return null
+      end = i
+      break
+    }
+
+    if (end < 0) return null
+
+    let start = end
+    while (start > 0 && messages[start - 1]?.role === "assistant") {
+      start -= 1
+    }
+
+    for (let i = end; i >= start; i -= 1) {
+      const candidate = messages[i]
+      if (!candidate || candidate.role !== "assistant") continue
+      const snapshot = resolveLatestTodoSnapshot(partsByMessage[candidate.id] ?? [])
+      if (snapshot) return snapshot
+    }
+
+    return null
+  }, [messages, partsByMessage])
+
+  useEffect(() => {
+    if (!shouldShowLoadingState) {
+      setShowLoadingSkeleton(false)
+      return
+    }
+    const timer = setTimeout(() => {
+      setShowLoadingSkeleton(true)
+    }, LOADING_SKELETON_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [shouldShowLoadingState])
 
   const clearPollTimer = useCallback(() => {
     if (pollTimerRef.current) {
@@ -76,18 +130,17 @@ export default function SessionScreen() {
   }, [])
 
   const createSession = useCallback(async () => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
     try {
-      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
       if (session?.directory && session.directory !== directory) {
         await switchDirectory(session.directory)
       }
-      const next = await create()
-      select(next.id)
-      router.replace(`/(main)/session/${next.id}`)
+      select(null)
+      router.replace("/(main)/session")
     } catch {
-      Alert.alert("Unable to create session", "Please try again.")
+      Alert.alert("Unable to start session", "Please try again.")
     }
-  }, [session?.directory, directory, switchDirectory, create, select, router])
+  }, [session?.directory, directory, switchDirectory, select, router])
 
   const openOptions = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
@@ -126,7 +179,7 @@ export default function SessionScreen() {
       })
       markChatOpenStart(id)
       select(id)
-      void load(id, { limit: SESSION_OPEN_LIMIT, compact: true })
+      void load(id, { limit: SESSION_OPEN_LIMIT, compact: true, trimToRecent: SESSION_OPEN_LIMIT })
       addCrashBreadcrumb("session-screen:load", { sessionID: id, limit: SESSION_OPEN_LIMIT })
       // Mark as seen after a short delay to let initial content animate
       const timer = setTimeout(() => seen.current.add(id), 1500)
@@ -142,6 +195,45 @@ export default function SessionScreen() {
       }
     }
   }, [id, load, refreshRequests, select])
+
+  useEffect(() => {
+    if (!id) return
+    if (!session?.directory || session.directory === directory) return
+    let cancelled = false
+
+    addCrashBreadcrumb("session-screen:directory-switch:start", {
+      sessionID: id,
+      fromDirectory: directory,
+      toDirectory: session.directory,
+    })
+
+    void switchDirectory(session.directory)
+      .then(() => {
+        if (cancelled) return
+        addCrashBreadcrumb("session-screen:directory-switch:done", {
+          sessionID: id,
+          toDirectory: session.directory,
+        })
+        // Refresh from the correct directory, but keep render bounded to latest messages.
+        void load(id, { limit: SESSION_OPEN_LIMIT, compact: true, trimToRecent: SESSION_OPEN_LIMIT })
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        addCrashBreadcrumb(
+          "session-screen:directory-switch:error",
+          {
+            sessionID: id,
+            toDirectory: session.directory,
+            message: error instanceof Error ? error.message : String(error),
+          },
+          "warn",
+        )
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [directory, id, load, session?.directory, switchDirectory])
 
   useEffect(() => {
     if (!id) return
@@ -337,7 +429,12 @@ export default function SessionScreen() {
                   accessibilityLabel="New session"
                   hitSlop={8}
                 >
-                  <MaterialIcon style={styles.composeSymbol} name="square-edit-outline" size={18} color={theme.colors.text} />
+                  <MaterialIcon
+                    style={styles.composeSymbol}
+                    name="square-edit-outline"
+                    size={18}
+                    color={theme.colors.text}
+                  />
                 </Pressable>
                 <Pressable
                   style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
@@ -352,7 +449,7 @@ export default function SessionScreen() {
             </View>
           </View>
 
-          {shouldShowLoadingState ? (
+          {showLoadingSkeleton ? (
             <View style={styles.loadingState}>
               <MessageSkeleton />
               <MessageSkeleton />
@@ -362,7 +459,7 @@ export default function SessionScreen() {
             <MessagesList sessionId={id} messages={messages} topPadding={16} />
           )}
           <RequestBanner sessionId={id} />
-          <Composer sessionId={id} />
+          <Composer sessionId={id} liveTodo={liveTodo} />
         </View>
         <ModelPicker visible={pickerVisible} onClose={() => setPickerVisible(false)} />
       </DisableFadeProvider>

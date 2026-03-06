@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Platform, StyleSheet, Pressable, View, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native"
+import {
+  ActivityIndicator,
+  Platform,
+  StyleSheet,
+  Pressable,
+  Text,
+  View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from "react-native"
 import Feather from "@expo/vector-icons/Feather"
 import { useRouter } from "expo-router"
 import type { Message } from "@opencode-ai/sdk/client"
@@ -16,12 +25,12 @@ import { synthesizeSessionDiff } from "../../features/diff/synthetic"
 import { resolveDiffLineCounts } from "../../features/diff/counts"
 import { addCrashBreadcrumb } from "../../perf/crash-breadcrumbs"
 import { useSessionDiffSummary, useSessionPartsMap } from "../../api/hooks"
-import { FEATURE_FLAGS } from "../../config/feature-flags"
 import { useChat } from "./provider"
 import { useTheme } from "../../theme"
 import { UserMessage } from "./user-message"
 import { AssistantMessage } from "./assistant-message"
 import { DiffSummaryCard } from "./diff-summary-card"
+import { resolveCompletedTodoSnapshot, type TodoSnapshot } from "./part"
 import {
   hasChanges,
   resolveEffectiveSessionData,
@@ -34,6 +43,13 @@ import {
 
 const STREAM_AUTOFOLLOW_MIN_GROWTH = 8
 const JUMP_TO_BOTTOM_DISTANCE = 320
+const OLDER_PREFETCH_OFFSET_PX = 1600
+const OLDER_PREFETCH_THROTTLE_MS = 320
+const TOP_LOAD_LOCK_OFFSET_PX = 10
+const SYNTHETIC_FALLBACK_MAX_MESSAGES = 120
+const TURN_DIFF_SYNTHESIS_MAX_TURNS = 18
+const TURN_DIFF_SYNTHESIS_LARGE_SESSION_CUTOFF = 220
+const TURN_DIFF_WINDOW_MAX_MESSAGES = 320
 const AnimatedView = Animated.View as React.ComponentType<{ style?: unknown; children?: React.ReactNode }>
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string; style?: unknown }>
 const Glass = LiquidGlassView as React.ComponentType<{
@@ -43,6 +59,7 @@ const Glass = LiquidGlassView as React.ComponentType<{
 }>
 const EMPTY_DIFFS: SessionFileDiff[] = []
 const EMPTY_DIFF_FOOTERS: DiffFooterMeta[] = []
+const EMPTY_COMPLETED_TODOS = new Map<string, TodoSnapshot>()
 
 type Props = {
   sessionId: string
@@ -153,15 +170,22 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   const sessionDiffFetchedAt = useDiffs(useCallback((s) => s.fetchedAt[sessionId] ?? 0, [sessionId]))
   const partsByMessage = useSessionPartsMap(sessionId)
   const [showJump, setShowJump] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
 
   const didInitialScroll = useRef(false)
+  const initialBottomSyncPendingRef = useRef(true)
   const prevCount = useRef(0)
   const raf = useRef<number | null>(null)
+  const bottomSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const loadingMoreRef = useRef(false)
+  const loadingOlderVisibleRef = useRef(false)
   const userInteractingRef = useRef(false)
   const momentumActiveRef = useRef(false)
   const contentHeightRef = useRef(0)
+  const lastScrollOffsetYRef = useRef(0)
+  const topLockDuringLoadRef = useRef(false)
   const jumpVisibleRef = useRef(false)
+  const lastOlderPrefetchAtRef = useRef(0)
   const malformedMessageKeysRef = useRef(new Set<string>())
 
   const logMalformedMessage = useCallback(
@@ -188,6 +212,12 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   )
 
   const count = messages.length
+  const olderPrefetchOffset = useMemo(() => {
+    if (count >= 2000) return 2800
+    if (count >= 1200) return 2200
+    if (count >= 600) return 1800
+    return OLDER_PREFETCH_OFFSET_PX
+  }, [count])
   const latestAssistantIndex = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const candidate = messages[i]
@@ -195,6 +225,40 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     }
     return -1
   }, [messages])
+  const completedTodoByAssistantID = useMemo(() => {
+    if (messages.length === 0) return EMPTY_COMPLETED_TODOS
+
+    const byAssistantID = new Map<string, TodoSnapshot>()
+    let index = 0
+
+    while (index < messages.length) {
+      const start = index
+      while (index < messages.length && messages[index]?.role === "assistant") {
+        index += 1
+      }
+      if (index === start) {
+        index += 1
+        continue
+      }
+
+      let snapshot: TodoSnapshot | null = null
+      for (let cursor = index - 1; cursor >= start; cursor -= 1) {
+        const candidate = messages[cursor]
+        if (!candidate || candidate.role !== "assistant") continue
+        snapshot = resolveCompletedTodoSnapshot(partsByMessage[candidate.id] ?? [], !!candidate.time.completed)
+        if (snapshot) break
+      }
+
+      if (snapshot) {
+        const tail = messages[index - 1]
+        if (tail?.role === "assistant") {
+          byAssistantID.set(tail.id, snapshot)
+        }
+      }
+    }
+
+    return byAssistantID
+  }, [messages, partsByMessage])
 
   const apiDiffs = useMemo(() => {
     const normalized = sessionDiffs
@@ -203,7 +267,8 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     return dedupeDiffs(normalized)
   }, [sessionDiffs])
   const hasRenderableSessionDiffs = apiDiffs.length > 0
-  const includeSyntheticFallback = !isBusy && !hasRenderableSessionDiffs && messages.length > 0
+  const includeSyntheticFallback =
+    !isBusy && !hasRenderableSessionDiffs && messages.length > 0 && messages.length <= SYNTHETIC_FALLBACK_MAX_MESSAGES
   const {
     historyDiffs: sessionHistoryDiffs,
     historySummary: sessionHistorySummary,
@@ -275,14 +340,21 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   ])
 
   const latestAssistant = latestAssistantIndex >= 0 ? messages[latestAssistantIndex] : undefined
+  const latestAssistantID =
+    latestAssistant && latestAssistant.role === "assistant" && typeof latestAssistant.id === "string" ? latestAssistant.id : ""
   const latestAssistantCreatedAt = useMemo(() => {
     if (!latestAssistant || latestAssistant.role !== "assistant") return 0
     return Math.max(0, asNumber(latestAssistant.time?.created))
   }, [latestAssistant])
 
+  const turnDiffMessages = useMemo(
+    () => (messages.length > TURN_DIFF_WINDOW_MAX_MESSAGES ? messages.slice(-TURN_DIFF_WINDOW_MAX_MESSAGES) : messages),
+    [messages],
+  )
+
   const assistantMessagesByParentID = useMemo(() => {
     const result = new Map<string, Message[]>()
-    for (const message of messages) {
+    for (const message of turnDiffMessages) {
       if (!message || message.role !== "assistant") continue
       const parentID = asString((message as { parentID?: unknown }).parentID)
       if (!parentID) continue
@@ -291,28 +363,28 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
       else result.set(parentID, [message])
     }
     return result
-  }, [messages])
+  }, [turnDiffMessages])
 
   const userMessagesByID = useMemo(() => {
     const result = new Map<string, Message>()
-    for (const message of messages) {
+    for (const message of turnDiffMessages) {
       if (!message || message.role !== "user") continue
       if (typeof message.id !== "string" || !message.id) continue
       result.set(message.id, message)
     }
     return result
-  }, [messages])
+  }, [turnDiffMessages])
 
   const userSummaryDiffsByID = useMemo(() => {
     const result = new Map<string, SessionFileDiff[]>()
-    for (const message of messages) {
+    for (const message of turnDiffMessages) {
       if (!message || message.role !== "user") continue
       if (typeof message.id !== "string" || !message.id) continue
       const summaryDiffs = (message as { summary?: { diffs?: unknown } }).summary?.diffs
       result.set(message.id, normalizeDiffList(summaryDiffs))
     }
     return result
-  }, [messages])
+  }, [turnDiffMessages])
 
   useEffect(() => {
     if (!isBusy || !latestAssistantCreatedAt) return
@@ -339,7 +411,12 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
 
   const turnFooterByAssistantID = useMemo(() => {
     const result = new Map<string, DiffFooterMeta>()
-    for (const [parentID, assistants] of assistantMessagesByParentID.entries()) {
+    const entries = Array.from(assistantMessagesByParentID.entries())
+    const maxTurns = messages.length > TURN_DIFF_SYNTHESIS_LARGE_SESSION_CUTOFF ? 1 : TURN_DIFF_SYNTHESIS_MAX_TURNS
+    const start = Math.max(0, entries.length - maxTurns)
+
+    for (let i = start; i < entries.length; i += 1) {
+      const [parentID, assistants] = entries[i]
       if (!parentID || assistants.length === 0) continue
       const targetAssistant = assistants[assistants.length - 1]
       if (!targetAssistant || typeof targetAssistant.id !== "string" || !targetAssistant.id) continue
@@ -347,7 +424,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
       const summaryDiffs = userSummaryDiffsByID.get(parentID) ?? EMPTY_DIFFS
       let syntheticDiffs = EMPTY_DIFFS
       const userMessage = userMessagesByID.get(parentID)
-      if (userMessage) {
+      if (userMessage && (summaryDiffs.length === 0 || targetAssistant.id === latestAssistantID)) {
         try {
           syntheticDiffs = normalizeDiffList(synthesizeSessionDiff([userMessage, ...assistants], partsByMessage))
         } catch {
@@ -366,17 +443,15 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
       if (turnFooterMeta) result.set(targetAssistant.id, turnFooterMeta)
     }
     return result
-  }, [assistantMessagesByParentID, isBusy, partsByMessage, userMessagesByID, userSummaryDiffsByID])
+  }, [assistantMessagesByParentID, isBusy, latestAssistantID, messages.length, partsByMessage, userMessagesByID, userSummaryDiffsByID])
 
   const diffFootersByAssistantID = useMemo(() => {
-    const latestAssistantID =
-      latestAssistant && latestAssistant.role === "assistant" && typeof latestAssistant.id === "string" ? latestAssistant.id : ""
     return resolveFootersByAssistant({
       turnFooterByAssistantID,
       latestAssistantID,
       sessionFooterMeta,
     })
-  }, [latestAssistant, sessionFooterMeta, turnFooterByAssistantID])
+  }, [latestAssistantID, sessionFooterMeta, turnFooterByAssistantID])
 
   const openDiff = useCallback(
     (meta: DiffFooterMeta) => {
@@ -421,6 +496,10 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
         cancelAnimationFrame(raf.current)
         raf.current = null
       }
+      if (bottomSettleTimerRef.current) {
+        clearTimeout(bottomSettleTimerRef.current)
+        bottomSettleTimerRef.current = null
+      }
     }
   }, [])
 
@@ -428,15 +507,25 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     addCrashBreadcrumb("chat-list:session-change", { sessionID: sessionId })
     malformedMessageKeysRef.current.clear()
     didInitialScroll.current = false
+    initialBottomSyncPendingRef.current = true
     prevCount.current = 0
     userInteractingRef.current = false
     momentumActiveRef.current = false
     contentHeightRef.current = 0
+    lastScrollOffsetYRef.current = 0
+    topLockDuringLoadRef.current = false
     jumpVisibleRef.current = false
+    loadingOlderVisibleRef.current = false
+    lastOlderPrefetchAtRef.current = 0
     setShowJump(false)
+    setLoadingOlder(false)
     if (raf.current !== null) {
       cancelAnimationFrame(raf.current)
       raf.current = null
+    }
+    if (bottomSettleTimerRef.current) {
+      clearTimeout(bottomSettleTimerRef.current)
+      bottomSettleTimerRef.current = null
     }
   }, [sessionId])
 
@@ -471,6 +560,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
           <AssistantMessage
             message={item}
             showFooter={index === latestAssistantIndex}
+            completedTodo={completedTodoByAssistantID.get(item.id) ?? null}
             diffFooter={
               footerMetas.length > 0 ? (
                 <View style={styles.diffFooterStack}>
@@ -493,7 +583,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
       }
       return null
     },
-    [diffFootersByAssistantID, latestAssistantIndex, logMalformedMessage, openDiff],
+    [completedTodoByAssistantID, diffFootersByAssistantID, latestAssistantIndex, logMalformedMessage, openDiff],
   )
 
   const keyExtractor = useCallback((item: Message, index: number) => {
@@ -508,9 +598,41 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     return "unknown"
   }, [logMalformedMessage])
 
+  const triggerLoadMore = useCallback(
+    function triggerLoadMoreImpl(showLoader: boolean, allowFollowup = true) {
+      if (!didInitialScroll.current) return
+      if (loadingMoreRef.current || exhaustedSession) return
+      loadingMoreRef.current = true
+      topLockDuringLoadRef.current = false
+      loadingOlderVisibleRef.current = showLoader
+      if (showLoader) setLoadingOlder(true)
+      void loadMore(sessionId).finally(() => {
+        loadingMoreRef.current = false
+        topLockDuringLoadRef.current = false
+        if (allowFollowup && !exhaustedSession && lastScrollOffsetYRef.current <= olderPrefetchOffset * 0.45) {
+          // If the user is still very close to the top, fetch one extra page to avoid blank gaps.
+          triggerLoadMoreImpl(true, false)
+          return
+        }
+        if (loadingOlderVisibleRef.current && !loadingMoreRef.current) {
+          loadingOlderVisibleRef.current = false
+          setLoadingOlder(false)
+        }
+      })
+    },
+    [exhaustedSession, loadMore, olderPrefetchOffset, sessionId],
+  )
+
   const handleScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent
+      lastScrollOffsetYRef.current = contentOffset.y
+      if (loadingMoreRef.current && contentOffset.y < TOP_LOAD_LOCK_OFFSET_PX) {
+        if (!topLockDuringLoadRef.current) {
+          topLockDuringLoadRef.current = true
+          listRef.current?.scrollToOffset({ offset: TOP_LOAD_LOCK_OFFSET_PX, animated: false })
+        }
+      }
       const distance = contentSize.height - contentOffset.y - layoutMeasurement.height
       isAtEnd.value = distance < 150
       const shouldShow = distance > JUMP_TO_BOTTOM_DISTANCE
@@ -518,18 +640,29 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
         jumpVisibleRef.current = shouldShow
         setShowJump(shouldShow)
       }
+
+      if (
+        contentOffset.y <= olderPrefetchOffset &&
+        didInitialScroll.current &&
+        !loadingMoreRef.current &&
+        !exhaustedSession
+      ) {
+        const now = Date.now()
+        if (now - lastOlderPrefetchAtRef.current >= OLDER_PREFETCH_THROTTLE_MS) {
+          lastOlderPrefetchAtRef.current = now
+          triggerLoadMore(true)
+        }
+      }
     },
-    [isAtEnd],
+    [exhaustedSession, isAtEnd, olderPrefetchOffset, triggerLoadMore],
   )
 
   const onStartReached = useCallback(() => {
-    if (!didInitialScroll.current) return
-    if (loadingMoreRef.current || exhaustedSession) return
-    loadingMoreRef.current = true
-    void loadMore(sessionId).finally(() => {
-      loadingMoreRef.current = false
-    })
-  }, [loadMore, sessionId, exhaustedSession])
+    const now = Date.now()
+    if (now - lastOlderPrefetchAtRef.current < OLDER_PREFETCH_THROTTLE_MS) return
+    lastOlderPrefetchAtRef.current = now
+    triggerLoadMore(true)
+  }, [triggerLoadMore])
 
   const onScrollBeginDrag = useCallback(() => {
     userInteractingRef.current = true
@@ -555,7 +688,17 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     (_width: number, height: number) => {
       const previousHeight = contentHeightRef.current
       contentHeightRef.current = height
+      if (initialBottomSyncPendingRef.current && didInitialScroll.current && count > 0) {
+        initialBottomSyncPendingRef.current = false
+        scheduleScrollToEnd(false)
+        if (bottomSettleTimerRef.current) clearTimeout(bottomSettleTimerRef.current)
+        bottomSettleTimerRef.current = setTimeout(() => {
+          bottomSettleTimerRef.current = null
+          scheduleScrollToEnd(false)
+        }, 42)
+      }
 
+      if (!isBusy) return
       if (!didInitialScroll.current) return
       if (previousHeight <= 0) return
       if (height - previousHeight < STREAM_AUTOFOLLOW_MIN_GROWTH) return
@@ -566,7 +709,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
 
       scheduleScrollToEnd(false)
     },
-    [count, isAtEnd, scheduleScrollToEnd],
+    [count, isAtEnd, isBusy, scheduleScrollToEnd],
   )
 
   const contentContainerStyle = useMemo(
@@ -594,9 +737,12 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   }, [count, isBusy])
 
   const drawDistance = useMemo(() => {
-    if (isBusy) return Platform.OS === "ios" ? 620 : 600
-    return Platform.OS === "ios" ? 320 : 360
-  }, [isBusy])
+    if (count >= 2400) return Platform.OS === "ios" ? 1800 : 1700
+    if (count >= 1200) return Platform.OS === "ios" ? 1400 : 1320
+    if (count >= 500) return Platform.OS === "ios" ? 1000 : 940
+    if (isBusy) return Platform.OS === "ios" ? 760 : 720
+    return Platform.OS === "ios" ? 460 : 500
+  }, [count, isBusy])
   const jumpBottom = Math.max(composerH + 14, insets.bottom + 60)
 
   const onListLoad = useCallback(() => {
@@ -611,6 +757,24 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     addCrashBreadcrumb("chat-list:on-load", { sessionID: sessionId, count })
   }, [count, scheduleScrollToEnd, sessionId])
 
+  const listHeader = useMemo(() => {
+    if (exhaustedSession || !loadingOlder) return null
+    return (
+      <View
+        style={[
+          styles.olderLoadingHeader,
+          {
+            borderColor: theme.colors.borderSubtle,
+            backgroundColor: theme.colors.background,
+          },
+        ]}
+      >
+        <ActivityIndicator size="small" color={theme.colors.textSecondary} />
+        <Text style={[styles.olderLoadingText, { color: theme.colors.textSecondary }]}>Loading older messages...</Text>
+      </View>
+    )
+  }, [exhaustedSession, loadingOlder, theme.colors.background, theme.colors.borderSubtle, theme.colors.textSecondary])
+
   useEffect(() => {
     if (!didInitialScroll.current) {
       prevCount.current = count
@@ -622,11 +786,11 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
       return
     }
 
-    if (count > prevCount.current && isAtEnd.value && !userInteractingRef.current && !momentumActiveRef.current) {
+    if (isBusy && count > prevCount.current && isAtEnd.value && !userInteractingRef.current && !momentumActiveRef.current) {
       scheduleScrollToEnd(false)
     }
     prevCount.current = count
-  }, [count, scheduleScrollToEnd, isAtEnd])
+  }, [count, isAtEnd, isBusy, scheduleScrollToEnd])
 
   return (
     <AnimatedView style={[styles.wrapper, wrapperKeyboardStyle]}>
@@ -636,7 +800,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
         renderItem={renderItem}
         keyExtractor={keyExtractor}
         getItemType={getItemType}
-        style={styles.list}
+        style={[styles.list, { backgroundColor: theme.colors.background }]}
         contentContainerStyle={contentContainerStyle}
         onScroll={handleScroll}
         onScrollBeginDrag={onScrollBeginDrag}
@@ -648,12 +812,16 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
         scrollEventThrottle={16}
         drawDistance={drawDistance}
         onStartReached={onStartReached}
-        onStartReachedThreshold={0.08}
+        onStartReachedThreshold={0.7}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
         maintainVisibleContentPosition={maintainVisibleContentPosition}
-        removeClippedSubviews={Platform.OS === "ios" ? FEATURE_FLAGS.iosClippedSubviews : true}
+        removeClippedSubviews={Platform.OS === "ios" ? false : true}
+        ListHeaderComponent={listHeader}
         ListFooterComponent={
           !latestAssistant && sessionFooterMeta ? (
             <DiffSummaryCard
@@ -726,6 +894,22 @@ const styles = StyleSheet.create({
   },
   diffFooterStack: {
     gap: 2,
+  },
+  olderLoadingHeader: {
+    alignSelf: "center",
+    marginBottom: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minHeight: 30,
+  },
+  olderLoadingText: {
+    fontSize: 12,
+    fontWeight: "500",
   },
   jumpGlass: {
     position: "absolute",

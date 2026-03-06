@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useMemo, memo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, memo, useState } from "react"
 import { View, Text, TextInput, Pressable, StyleSheet, RefreshControl, Alert } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
-import * as ZeegoContextMenu from "zeego/context-menu"
 import * as Haptics from "expo-haptics"
 import * as Clipboard from "expo-clipboard"
 import Feather from "@expo/vector-icons/Feather"
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons"
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list"
+import { useGlobalSearchParams } from "expo-router"
 import type { Project, Session } from "@opencode-ai/sdk/client"
 import { useSessions } from "../../store/sessions"
 import { useConnection } from "../../store/connection"
@@ -16,31 +16,8 @@ import { relative } from "../../util/format"
 import { SessionListSkeleton } from "../skeleton"
 import { AnimatedStatusDot } from "../status-dot"
 import { client } from "../../api/client"
-import { addCrashBreadcrumb } from "../../perf/crash-breadcrumbs"
 import { ServerSwitcher } from "./server-switcher"
 
-// React 19 JSX compat casts
-const MenuRoot = ZeegoContextMenu.Root as React.ComponentType<{
-  onOpenChange?: (open: boolean) => void
-  children?: React.ReactNode
-}>
-const MenuTrigger = ZeegoContextMenu.Trigger as React.ComponentType<{
-  asChild?: boolean
-  action?: "press" | "longPress"
-  children?: React.ReactElement
-}>
-const MenuContent = ZeegoContextMenu.Content as React.ComponentType<{ children?: React.ReactNode }>
-const MenuItem = ZeegoContextMenu.Item as React.ComponentType<{
-  key: string
-  onSelect?: () => void
-  destructive?: boolean
-  children?: React.ReactNode
-}>
-const MenuItemTitle = ZeegoContextMenu.ItemTitle as React.ComponentType<{ children?: React.ReactNode }>
-const MenuItemIcon = ZeegoContextMenu.ItemIcon as React.ComponentType<{
-  ios?: { name: string }
-  children?: React.ReactNode
-}>
 const Glass = LiquidGlassView as React.ComponentType<{
   interactive?: boolean
   style?: unknown
@@ -54,7 +31,6 @@ const FeatherIcon = Feather as unknown as React.ComponentType<{
 }>
 const SIDEBAR_DRAW_DISTANCE = 700
 const SESSION_RENDER_CHUNK = 20
-const SESSION_SELECT_DEBOUNCE_MS = 280
 const MaterialIcon = MaterialCommunityIcons as unknown as React.ComponentType<{
   name: string
   size: number
@@ -66,7 +42,6 @@ type Props = {
   onSelect: (session: Session) => void | Promise<void>
   onNew: (worktree?: string) => void | Promise<void>
   onSettings: () => void
-  canSelectSession?: () => boolean
   sidebarVisible: boolean
   onServerSwitched?: () => void
 }
@@ -79,11 +54,20 @@ type SectionItem = {
   active: boolean
 }
 
+function resolveRouteSessionID(value: string | string[] | undefined) {
+  if (typeof value === "string") return value || null
+  if (Array.isArray(value)) {
+    for (const candidate of value) {
+      if (candidate) return candidate
+    }
+  }
+  return null
+}
+
 export const Sidebar = memo(function Sidebar({
   onSelect,
   onNew,
   onSettings,
-  canSelectSession,
   sidebarVisible,
   onServerSwitched,
 }: Props) {
@@ -96,10 +80,13 @@ export const Sidebar = memo(function Sidebar({
   const fetchStatuses = useSessions((s) => s.fetchStatuses)
   const archive = useSessions((s) => s.archive)
   const deleteSession = useSessions((s) => s.delete)
+  const currentSessionID = useSessions((s) => s.current)
   const directory = useConnection((s) => s.directory)
+  const routeParams = useGlobalSearchParams<{ id?: string | string[] }>()
   const [query, setQuery] = useState("")
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
-  const lastSelectAtRef = useRef(0)
+  const routeSessionID = useMemo(() => resolveRouteSessionID(routeParams.id), [routeParams.id])
+  const activeSessionID = routeSessionID ?? currentSessionID
 
   const filteredSessions = useMemo(() => {
     const deduped = dedupeSessionsByID(sessions)
@@ -147,15 +134,16 @@ export const Sidebar = memo(function Sidebar({
     return orderedProjects.map((project) => {
       const sessions = grouped[project.worktree] ?? []
       const isCollapsed = collapsed[project.worktree] ?? false
+      const hasActiveSession = !!activeSessionID && sessions.some((session) => session.id === activeSessionID)
       return {
         project,
         sessions,
         count: sessions.length,
         collapsed: isCollapsed,
-        active: project.worktree === directory,
+        active: hasActiveSession || project.worktree === directory,
       }
     })
-  }, [filteredSessions, projectsWithFallback, directory, collapsed])
+  }, [activeSessionID, collapsed, directory, filteredSessions, projectsWithFallback])
 
   const handleArchive = useCallback(
     (id: string) => {
@@ -239,30 +227,15 @@ export const Sidebar = memo(function Sidebar({
           item={item}
           onToggle={toggleProject}
           onNew={handleCreateSession}
-          onSelect={(session) => {
-            const now = Date.now()
-            if (now - lastSelectAtRef.current < SESSION_SELECT_DEBOUNCE_MS) {
-              addCrashBreadcrumb(
-                "sidebar:select-debounced",
-                {
-                  sessionID: session.id,
-                  sinceLastMs: now - lastSelectAtRef.current,
-                },
-                "warn",
-              )
-              return
-            }
-            lastSelectAtRef.current = now
-            void onSelect(session)
-          }}
+          onSelect={(session) => void onSelect(session)}
           onArchive={handleArchive}
           onDelete={handleDelete}
           onShare={handleShare}
-          canSelectSession={canSelectSession}
+          activeSessionID={activeSessionID}
         />
       )
     },
-    [handleArchive, handleDelete, handleShare, onSelect, canSelectSession, toggleProject, handleCreateSession],
+    [activeSessionID, handleArchive, handleCreateSession, handleDelete, handleShare, onSelect, toggleProject],
   )
 
   const keyExtractor = useCallback((item: SectionItem) => {
@@ -437,7 +410,7 @@ const ProjectSection = memo(function ProjectSection({
   onArchive,
   onDelete,
   onShare,
-  canSelectSession,
+  activeSessionID,
 }: {
   item: SectionItem
   onToggle: (worktree: string) => void
@@ -446,7 +419,7 @@ const ProjectSection = memo(function ProjectSection({
   onArchive: (id: string) => void
   onDelete: (id: string) => void
   onShare: (id: string) => void
-  canSelectSession?: () => boolean
+  activeSessionID: string | null
 }) {
   const theme = useTheme()
   const [visibleCount, setVisibleCount] = useState(SESSION_RENDER_CHUNK)
@@ -476,7 +449,7 @@ const ProjectSection = memo(function ProjectSection({
                 onArchive={onArchive}
                 onDelete={onDelete}
                 onShare={onShare}
-                canSelectSession={canSelectSession}
+                activeSessionID={activeSessionID}
               />
             </View>
           ))}
@@ -509,48 +482,42 @@ const SessionRow = memo(function SessionRow({
   onArchive,
   onDelete,
   onShare,
-  canSelectSession,
+  activeSessionID,
 }: {
   session: Session
   onSelect: (session: Session) => void | Promise<void>
   onArchive: (id: string) => void
   onDelete: (id: string) => void
   onShare: (id: string) => void
-  canSelectSession?: () => boolean
+  activeSessionID: string | null
 }) {
   const theme = useTheme()
-  const selected = useSessions((s) => s.current === session.id)
-
-  const handleMenuOpen = useCallback(() => {
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
-  }, [])
+  const selected = activeSessionID === session.id
 
   const handleSelect = useCallback(() => {
-    if (canSelectSession && !canSelectSession()) {
-      addCrashBreadcrumb(
-        "sidebar:select-blocked",
-        {
-          sessionID: session.id,
-          sessionTitle: session.title || "Untitled session",
-        },
-        "warn",
-      )
-      return
-    }
     void onSelect(session)
-  }, [onSelect, session, canSelectSession])
+  }, [onSelect, session])
 
-  const rowBody = (
+  const handleLongPress = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+    Alert.alert(session.title || "Session actions", undefined, [
+      { text: "Share", onPress: () => void onShare(session.id) },
+      { text: "Archive", onPress: () => void onArchive(session.id) },
+      { text: "Delete", style: "destructive", onPress: () => void onDelete(session.id) },
+      { text: "Cancel", style: "cancel" },
+    ])
+  }, [onArchive, onDelete, onShare, session.id, session.title])
+
+  return (
     <Pressable
       style={({ pressed }) => [
         styles.sessionRow,
-        {
-          backgroundColor: selected ? theme.colors.surfaceRaised : "transparent",
-          borderRadius: theme.radii.md,
-          opacity: pressed ? 0.72 : 1,
-        },
+        selected && { backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.accent },
+        { opacity: pressed ? 0.72 : 1 },
       ]}
       onPress={handleSelect}
+      onLongPress={handleLongPress}
+      delayLongPress={260}
       hitSlop={6}
     >
       <View style={styles.sessionMain}>
@@ -560,29 +527,6 @@ const SessionRow = memo(function SessionRow({
         <Text style={[styles.sessionMeta, { color: theme.colors.textTertiary }]}>{relative(session.time.updated)}</Text>
       </View>
     </Pressable>
-  )
-
-  return (
-    <MenuRoot onOpenChange={(open) => open && handleMenuOpen()}>
-      <MenuTrigger asChild action="longPress">
-        {rowBody}
-      </MenuTrigger>
-
-      <MenuContent>
-        <MenuItem key="share" onSelect={() => onShare(session.id)}>
-          <MenuItemTitle>Share</MenuItemTitle>
-          <MenuItemIcon ios={{ name: "square.and.arrow.up" }} />
-        </MenuItem>
-        <MenuItem key="archive" onSelect={() => onArchive(session.id)}>
-          <MenuItemTitle>Archive</MenuItemTitle>
-          <MenuItemIcon ios={{ name: "archivebox" }} />
-        </MenuItem>
-        <MenuItem key="delete" onSelect={() => onDelete(session.id)} destructive>
-          <MenuItemTitle>Delete</MenuItemTitle>
-          <MenuItemIcon ios={{ name: "trash" }} />
-        </MenuItem>
-      </MenuContent>
-    </MenuRoot>
   )
 })
 
@@ -783,6 +727,14 @@ const styles = StyleSheet.create({
     paddingRight: 10,
     paddingVertical: 6,
     gap: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "transparent",
+  },
+  sessionRowSelected: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.15)",
   },
   sessionGroup: {
     marginLeft: 22,

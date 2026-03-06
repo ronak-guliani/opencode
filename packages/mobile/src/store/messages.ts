@@ -43,7 +43,10 @@ type MessageState = {
   hydrated: Record<string, boolean>
   sessionOrder: string[]
   reset: () => void
-  load: (sessionID: string, opts?: { force?: boolean; limit?: number; compact?: boolean }) => Promise<void>
+  load: (
+    sessionID: string,
+    opts?: { force?: boolean; limit?: number; compact?: boolean; trimToRecent?: number },
+  ) => Promise<void>
   loadMore: (sessionID: string) => Promise<void>
   prefetch: (sessionIDs: string[], opts?: { limit?: number }) => Promise<void>
   hydrateMessage: (sessionID: string, messageID: string) => Promise<void>
@@ -69,9 +72,10 @@ type CachedSession = {
 const MESSAGE_CACHE_TTL_MS = 5 * 60_000
 const PERSISTED_CACHE_TTL_MS = 24 * 60 * 60_000
 const INITIAL_MESSAGE_LIMIT = 60
-const LOAD_MORE_STEP = 40
+const LOAD_MORE_STEP = 80
 const PREFETCH_LIMIT = 12
 const MAX_MESSAGE_LIMIT = 5_000
+const FAST_TRIM_SKIP_CLEANUP_THRESHOLD = 320
 const MAX_ACTIVE_SESSIONS = 8
 const MAX_PERSISTED_SESSIONS = 12
 const MAX_PERSISTED_MESSAGES_PER_SESSION = 140
@@ -266,14 +270,44 @@ function trimStateForLRU(state: MessageState, pinSessionID?: string): Partial<Me
 }
 
 function mergeMessages(existing: Message[], incoming: Message[]) {
-  const byID = new Map<string, Message>()
-  for (const message of incoming) {
-    byID.set(message.id, message)
+  if (incoming.length === 0) return existing
+  if (existing.length === 0) return [...incoming].sort(sortMessages)
+
+  const incomingSorted = [...incoming].sort(sortMessages)
+  const merged: Message[] = []
+  let i = 0
+  let j = 0
+
+  while (i < existing.length && j < incomingSorted.length) {
+    const left = existing[i]
+    const right = incomingSorted[j]
+    const cmp = left.id.localeCompare(right.id)
+    if (cmp < 0) {
+      merged.push(left)
+      i += 1
+      continue
+    }
+    if (cmp > 0) {
+      merged.push(right)
+      j += 1
+      continue
+    }
+    // Same id: prefer incoming copy from server.
+    merged.push(right)
+    i += 1
+    j += 1
   }
-  for (const message of existing) {
-    byID.set(message.id, message)
+
+  while (i < existing.length) {
+    merged.push(existing[i])
+    i += 1
   }
-  return Array.from(byID.values()).sort(sortMessages)
+  while (j < incomingSorted.length) {
+    merged.push(incomingSorted[j])
+    j += 1
+  }
+
+  return merged
 }
 
 function deltaBufferKey(messageID: string, partID: string, field: string) {
@@ -452,9 +486,91 @@ export const useMessages = createStore<MessageState>((set, get) => {
       if (state.loading[sessionID]) return
 
       const limit = Math.max(1, Math.min(opts?.limit ?? INITIAL_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT))
+      const trimToRecent = Math.max(0, Math.min(opts?.trimToRecent ?? 0, MAX_MESSAGE_LIMIT))
       const now = Date.now()
       const hasMessages = (state.messages[sessionID]?.length ?? 0) > 0
       const loadedAt = state.loadedAt[sessionID]
+
+      if (!opts?.force && trimToRecent > 0 && hasMessages && (state.messages[sessionID]?.length ?? 0) > trimToRecent) {
+        set((prev) => {
+          const existing = prev.messages[sessionID] ?? []
+          if (existing.length <= trimToRecent) {
+            return {
+              sessionOrder: touchSessionOrder(prev.sessionOrder, sessionID),
+            }
+          }
+
+          const nextMessages = existing.slice(-trimToRecent)
+          const trimCount = existing.length - nextMessages.length
+          const fastTrim = trimCount >= FAST_TRIM_SKIP_CLEANUP_THRESHOLD
+
+          if (fastTrim) {
+            return {
+              messages: { ...prev.messages, [sessionID]: nextMessages },
+              messageIndexBySession: {
+                ...prev.messageIndexBySession,
+                [sessionID]: buildMessageIndex(nextMessages),
+              },
+              lastMessageIDBySession: {
+                ...prev.lastMessageIDBySession,
+                [sessionID]: nextMessages[nextMessages.length - 1]?.id ?? "",
+              },
+              oldestCursor: {
+                ...prev.oldestCursor,
+                [sessionID]: nextMessages[0]?.id ?? null,
+              },
+              loadedAt: {
+                ...prev.loadedAt,
+                [sessionID]: Date.now(),
+              },
+              sessionOrder: touchSessionOrder(prev.sessionOrder, sessionID),
+            }
+          }
+
+          const keepMessageIDs = new Set(nextMessages.map((message) => message.id))
+          const nextParts = { ...prev.parts }
+          const nextPartIndexByMessage = { ...prev.partIndexByMessage }
+          const nextHydrated = { ...prev.hydrated }
+          const nextHydrating = { ...prev.hydrating }
+
+          for (const message of existing) {
+            if (keepMessageIDs.has(message.id)) continue
+            delete nextParts[message.id]
+            delete nextPartIndexByMessage[message.id]
+            delete nextHydrated[message.id]
+            delete nextHydrating[message.id]
+          }
+
+          const partsVersionBySession = { ...prev.partsVersionBySession }
+          incrementVersion(partsVersionBySession, sessionID)
+
+          return {
+            messages: { ...prev.messages, [sessionID]: nextMessages },
+            parts: nextParts,
+            messageIndexBySession: {
+              ...prev.messageIndexBySession,
+              [sessionID]: buildMessageIndex(nextMessages),
+            },
+            partIndexByMessage: nextPartIndexByMessage,
+            partsVersionBySession,
+            lastMessageIDBySession: {
+              ...prev.lastMessageIDBySession,
+              [sessionID]: nextMessages[nextMessages.length - 1]?.id ?? "",
+            },
+            hydrated: nextHydrated,
+            hydrating: nextHydrating,
+            oldestCursor: {
+              ...prev.oldestCursor,
+              [sessionID]: nextMessages[0]?.id ?? null,
+            },
+            loadedAt: {
+              ...prev.loadedAt,
+              [sessionID]: Date.now(),
+            },
+            sessionOrder: touchSessionOrder(prev.sessionOrder, sessionID),
+          }
+        })
+      }
 
       if (!opts?.force && hasMessages && loadedAt && now - loadedAt < MESSAGE_CACHE_TTL_MS) {
         addCrashBreadcrumb("messages-load:skip-memory-ttl", {

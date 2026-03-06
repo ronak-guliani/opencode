@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { View, StyleSheet, useWindowDimensions, Platform, type ViewProps } from "react-native"
 import { Stack, useRouter } from "expo-router"
 import { Drawer, useDrawerProgress } from "react-native-drawer-layout"
@@ -22,8 +22,6 @@ export default function MainLayout() {
   const { width } = useWindowDimensions()
   const isTablet = width >= 768
   const [open, setOpen] = useState(isTablet)
-  const drawerGestureActiveRef = useRef(false)
-  const blockSessionSelectUntilRef = useRef(0)
   const currentSessionID = useSessions((s) => s.current)
   const select = useSessions((s) => s.select)
   const directory = useConnection((s) => s.directory)
@@ -39,21 +37,13 @@ export default function MainLayout() {
   }, [])
   const sidebarVisible = isTablet || open
 
-  const blockSessionSelect = useCallback((durationMs: number) => {
-    blockSessionSelectUntilRef.current = Date.now() + durationMs
-  }, [])
-
-  const canSelectSession = useCallback(() => {
-    return Date.now() >= blockSessionSelectUntilRef.current
-  }, [])
-
   useEffect(() => {
     if (!openSignal || isTablet) return
     setOpenIfChanged(true)
   }, [openSignal, isTablet, setOpenIfChanged])
 
   const onSelectSession = useCallback(
-    async (session: Session) => {
+    (session: Session) => {
       if (session.id === currentSessionID) {
         addCrashBreadcrumb("session-switch:ignored-same-session", { sessionID: session.id })
         if (!isTablet) setOpenIfChanged(false)
@@ -65,23 +55,10 @@ export default function MainLayout() {
         toDirectory: session.directory,
         currentDirectory: directory,
       })
-      if (session.directory && session.directory !== directory) {
-        addCrashBreadcrumb("session-switch:directory-switch:start", {
-          sessionID: session.id,
-          toDirectory: session.directory,
-        })
-        await switchDirectory(session.directory)
-        addCrashBreadcrumb("session-switch:directory-switch:done", {
-          sessionID: session.id,
-          toDirectory: session.directory,
-        })
-      }
-      select(session.id)
-      addCrashBreadcrumb("session-switch:selected", { sessionID: session.id })
       addCrashBreadcrumb("session-switch:navigate", { sessionID: session.id })
       router.replace(`/(main)/session/${session.id}`)
     },
-    [currentSessionID, directory, isTablet, router, select, setOpenIfChanged, switchDirectory],
+    [currentSessionID, directory, isTablet, router, setOpenIfChanged],
   )
 
   const onNewSession = useCallback(async (worktree?: string) => {
@@ -100,9 +77,8 @@ export default function MainLayout() {
 
   const onServerSwitched = useCallback(() => {
     if (isTablet) return
-    blockSessionSelect(160)
     setOpenIfChanged(false)
-  }, [blockSessionSelect, isTablet, setOpenIfChanged])
+  }, [isTablet, setOpenIfChanged])
 
   const drawerStyle = useMemo(
     () => ({
@@ -118,38 +94,21 @@ export default function MainLayout() {
         onSelect={onSelectSession}
         onNew={onNewSession}
         onSettings={onSettings}
-        canSelectSession={canSelectSession}
         sidebarVisible={sidebarVisible}
         onServerSwitched={onServerSwitched}
       />
     ),
-    [canSelectSession, onNewSession, onSelectSession, onServerSwitched, onSettings, sidebarVisible],
+    [onNewSession, onSelectSession, onServerSwitched, onSettings, sidebarVisible],
   )
 
   return (
     <Drawer
       open={isTablet ? true : open}
       onOpen={() => {
-        drawerGestureActiveRef.current = false
-        blockSessionSelect(80)
         if (!isTablet) setOpenIfChanged(true)
       }}
       onClose={() => {
-        drawerGestureActiveRef.current = false
-        blockSessionSelect(120)
         if (!isTablet) setOpenIfChanged(false)
-      }}
-      onGestureStart={() => {
-        drawerGestureActiveRef.current = true
-        blockSessionSelect(220)
-      }}
-      onGestureCancel={() => {
-        drawerGestureActiveRef.current = false
-        blockSessionSelect(140)
-      }}
-      onGestureEnd={() => {
-        drawerGestureActiveRef.current = false
-        blockSessionSelect(180)
       }}
       drawerType={isTablet ? "permanent" : "slide"}
       swipeEnabled={!isTablet}

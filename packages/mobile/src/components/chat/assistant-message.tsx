@@ -7,7 +7,7 @@ import * as Clipboard from "expo-clipboard"
 import { useMessageParts } from "../../api/hooks"
 import { useMessages } from "../../store/messages"
 import { useTheme } from "../../theme"
-import { PartRenderer } from "./part"
+import { type TodoSnapshot, isTodoToolPart, PartRenderer, TodoPanel } from "./part"
 
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
 
@@ -15,9 +15,15 @@ type Props = {
   message: AssistantMessageData
   showFooter?: boolean
   diffFooter?: ReactNode
+  completedTodo?: TodoSnapshot | null
 }
 
-export const AssistantMessage = memo(function AssistantMessage({ message, showFooter = false, diffFooter = null }: Props) {
+export const AssistantMessage = memo(function AssistantMessage({
+  message,
+  showFooter = false,
+  diffFooter = null,
+  completedTodo = null,
+}: Props) {
   const theme = useTheme()
   const parts = useMessageParts(message.id)
   const hydrateMessage = useMessages((s) => s.hydrateMessage)
@@ -26,6 +32,8 @@ export const AssistantMessage = memo(function AssistantMessage({ message, showFo
   const totalTokens = message.tokens.input + message.tokens.output + message.tokens.reasoning
   const copyKey = useMemo(() => buildCopyCacheKey(parts), [parts])
   const canRetry = !!message.time.completed
+  const visibleParts = useMemo(() => parts.filter((part) => !isTodoToolPart(part)), [parts])
+  const activePartID = useMemo(() => resolveActivePartID(visibleParts, canRetry), [canRetry, visibleParts])
   const onHydrateMessage = useCallback(
     (messageID: string) => {
       void hydrateMessage(message.sessionID, messageID)
@@ -54,20 +62,22 @@ export const AssistantMessage = memo(function AssistantMessage({ message, showFo
     })
   }, [canRetry, message.id, message.sessionID, send])
 
-  if (parts.length === 0 && !diffFooter && !showFooter) return null
+  if (visibleParts.length === 0 && !completedTodo && !diffFooter && !showFooter) return null
 
   return (
     <View style={styles.container}>
       <View style={styles.content}>
-        {parts.map((part) => (
+        {visibleParts.map((part) => (
           <PartRenderer
             key={part.id}
             part={part}
             isUser={false}
+            isActive={part.id === activePartID}
             isStreamingComplete={!!message.time.completed}
             onHydrateMessage={onHydrateMessage}
           />
         ))}
+        {completedTodo ? <TodoPanel snapshot={completedTodo} /> : null}
       </View>
       {showFooter ? (
         <View style={styles.footer}>
@@ -119,6 +129,24 @@ function buildCopyCacheKey(parts: Part[]) {
       return `${part.id}:${part.type}`
     })
     .join("|")
+}
+
+function resolveActivePartID(parts: Part[], isStreamingComplete: boolean) {
+  if (isStreamingComplete) return ""
+
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i]
+    if (part?.type === "tool" && (part.state.status === "running" || part.state.status === "pending")) {
+      return part.id
+    }
+  }
+
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i]
+    if (part?.type === "reasoning" && !part.time.end) return part.id
+  }
+
+  return ""
 }
 
 function findRetryPrompt(

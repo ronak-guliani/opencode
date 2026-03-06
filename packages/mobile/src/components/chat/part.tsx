@@ -1,13 +1,16 @@
 import { memo, useState, useCallback, useEffect, useMemo } from "react"
-import { View, Text, Pressable, StyleSheet, Linking, Platform } from "react-native"
+import { View, Text, Pressable, StyleSheet, Linking, Platform, useWindowDimensions } from "react-native"
 import Feather from "@expo/vector-icons/Feather"
+import { LinearGradient } from "expo-linear-gradient"
 import Animated, {
+  cancelAnimation,
   Easing,
   FadeIn,
   FadeOut,
   LinearTransition,
   useAnimatedStyle,
   useSharedValue,
+  withRepeat,
   withTiming,
 } from "react-native-reanimated"
 import type {
@@ -23,19 +26,29 @@ import type {
 } from "@opencode-ai/sdk/client"
 import { useTheme } from "../../theme"
 import { MarkdownRenderer } from "../markdown/renderer"
+import { CodeBlock } from "../markdown/code-block"
 
 type SubtaskPart = Extract<Part, { type: "subtask" }>
 type CompactionPart = Extract<Part, { type: "compaction" }>
 type BlurbAction = "thought" | "created" | "ran" | "explored"
-type TodoItem = {
+export type TodoItem = {
   id: string
   content: string
   status: string
   priority: string
 }
+export type TodoSnapshot = {
+  part: ToolPart
+  todos: TodoItem[]
+  active: TodoItem[]
+  done: TodoItem[]
+  completedCount: number
+  isComplete: boolean
+}
 type Palette = ReturnType<typeof useTheme>["colors"]
 
 const AnimatedView: any = Animated.View
+const AnimatedLinearGradient: any = Animated.createAnimatedComponent(LinearGradient)
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string; style?: unknown }>
 const COLLAPSIBLE_LAYOUT = LinearTransition.springify().damping(22).stiffness(260).mass(0.7)
 const COLLAPSIBLE_ENTER = FadeIn.duration(140).easing(Easing.out(Easing.cubic))
@@ -57,40 +70,48 @@ const TODO_PRIORITY_ORDER: Record<string, number> = {
   medium: 1,
   low: 2,
 }
+const READ_BLURB_MAX_CHARS = 6_000
 
 type Props = {
   part: Part
   isUser: boolean
+  isActive?: boolean
   isStreamingComplete?: boolean
   onHydrateMessage?: (messageID: string) => void
 }
 
-export const PartRenderer = memo(function PartRenderer({ part, isUser, isStreamingComplete = true, onHydrateMessage }: Props) {
+export const PartRenderer = memo(function PartRenderer({
+  part,
+  isUser,
+  isActive = false,
+  isStreamingComplete = true,
+  onHydrateMessage,
+}: Props) {
   switch (part.type) {
     case "text":
       return <TextPartView part={part} isUser={isUser} isStreamingComplete={isStreamingComplete} />
     case "reasoning":
-      return <ReasoningPartView part={part} isStreamingComplete={isStreamingComplete} />
+      return <ReasoningPartView part={part} isActive={isActive} isStreamingComplete={isStreamingComplete} />
     case "tool":
-      return <ToolPartView part={part} onHydrateMessage={onHydrateMessage} />
+      return <ToolPartView part={part} isActive={isActive} onHydrateMessage={onHydrateMessage} />
     case "file":
-      return <FilePartView part={part} />
+      return <FilePartView part={part} isActive={isActive} />
     case "step-start":
       return null
     case "step-finish":
       return null
     case "snapshot":
-      return <SnapshotPartView part={part} />
+      return <SnapshotPartView part={part} isActive={isActive} />
     case "patch":
-      return <PatchPartView part={part} />
+      return <PatchPartView part={part} isActive={isActive} />
     case "agent":
-      return <AgentPartView part={part} />
+      return <AgentPartView part={part} isActive={isActive} />
     case "retry":
-      return <RetryPartView part={part} />
+      return <RetryPartView part={part} isActive={isActive} />
     case "subtask":
-      return <SubtaskPartView part={part} />
+      return <SubtaskPartView part={part} isActive={isActive} />
     case "compaction":
-      return <CompactionPartView part={part} />
+      return <CompactionPartView part={part} isActive={isActive} />
     default:
       return null
   }
@@ -110,25 +131,66 @@ function TextPartView({ part, isUser, isStreamingComplete }: { part: TextPart; i
 function BlurbRow({
   label,
   action,
+  isActive = false,
   expanded = false,
   onPress,
   showChevron = true,
 }: {
   label: string
   action: BlurbAction
+  isActive?: boolean
   expanded?: boolean
   onPress?: () => void
   showChevron?: boolean
 }) {
   const theme = useTheme()
+  const { width: screenWidth } = useWindowDimensions()
   const color = blurbActionColor(action, theme.colors)
   const verb = ACTION_WORD[action]
   const lower = label.toLowerCase()
   const lowerVerb = verb.toLowerCase()
+  const shimmerX = useSharedValue(-screenWidth)
+  const activeProgress = useSharedValue(isActive ? 1 : 0)
   const subject =
     lower.startsWith(lowerVerb) && label.length > verb.length
       ? label.slice(verb.length).trimStart()
       : label
+
+  useEffect(() => {
+    activeProgress.value = withTiming(isActive ? 1 : 0, {
+      duration: isActive ? 180 : 120,
+      easing: isActive ? Easing.out(Easing.cubic) : Easing.in(Easing.cubic),
+    })
+
+    if (!isActive) {
+      cancelAnimation(shimmerX)
+      shimmerX.value = -screenWidth
+      return
+    }
+
+    shimmerX.value = -screenWidth * 0.7
+    shimmerX.value = withRepeat(
+      withTiming(screenWidth * 0.85, {
+        duration: 1450,
+        easing: Easing.linear,
+      }),
+      -1,
+      false,
+    )
+
+    return () => {
+      cancelAnimation(shimmerX)
+    }
+  }, [activeProgress, isActive, screenWidth, shimmerX])
+
+  const shimmerStyle = useAnimatedStyle(() => ({
+    opacity: activeProgress.value,
+    transform: [{ translateX: shimmerX.value }],
+  }))
+
+  const activeGlowStyle = useAnimatedStyle(() => ({
+    opacity: activeProgress.value,
+  }))
 
   return (
     <Pressable
@@ -136,20 +198,71 @@ function BlurbRow({
       disabled={!onPress}
       style={({ pressed }) => [
         styles.collapsibleRow,
+        isActive && {
+          backgroundColor: withAlpha(color, theme.colors.background === "#09090b" ? 0.12 : 0.08),
+          borderColor: withAlpha(color, theme.colors.background === "#09090b" ? 0.26 : 0.18),
+        },
         onPress && pressed && styles.collapsibleRowPressed,
       ]}
     >
-      <View style={[styles.blurbDot, { backgroundColor: color }]} />
-      <Text style={styles.collapsibleLabel} numberOfLines={1}>
-        <Text style={[styles.collapsibleKeyword, { color }]}>{verb}</Text>
-        {subject && <Text style={[styles.collapsibleSubject, { color: theme.colors.textSecondary }]}> {subject}</Text>}
-        {!subject && <Text style={[styles.collapsibleSubject, { color: theme.colors.textSecondary }]}>{label}</Text>}
-      </Text>
-      {showChevron ? (
-        <View style={styles.collapsibleRight}>
-          <CollapsibleChevron expanded={expanded} color={theme.colors.textTertiary} />
-        </View>
+      {isActive ? (
+        <>
+          <AnimatedView
+            pointerEvents="none"
+            style={[
+              styles.collapsibleRowGlow,
+              activeGlowStyle,
+              {
+                backgroundColor: withAlpha(color, theme.colors.background === "#09090b" ? 0.07 : 0.05),
+              },
+            ]}
+          />
+          <AnimatedLinearGradient
+            pointerEvents="none"
+            colors={[withAlpha(color, 0), withAlpha(theme.colors.text, 0.22), withAlpha(color, 0)]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={[styles.collapsibleRowShimmer, shimmerStyle, { width: Math.max(120, screenWidth * 0.36) }]}
+          />
+        </>
       ) : null}
+      <View style={styles.collapsibleRowContent}>
+        <View style={[styles.blurbDot, { backgroundColor: color }]} />
+        <Text style={styles.collapsibleLabel} numberOfLines={1}>
+          <Text style={[styles.collapsibleKeyword, { color }]}>{verb}</Text>
+          {subject ? (
+            <Text style={[styles.collapsibleSubject, { color: isActive ? theme.colors.text : theme.colors.textSecondary }]}>
+              {" "}
+              {subject}
+            </Text>
+          ) : (
+            <Text style={[styles.collapsibleSubject, { color: isActive ? theme.colors.text : theme.colors.textSecondary }]}>
+              {label}
+            </Text>
+          )}
+        </Text>
+        <View style={styles.collapsibleRight}>
+          {isActive ? (
+            <View
+              style={[
+                styles.liveBadge,
+                {
+                  backgroundColor: withAlpha(color, theme.colors.background === "#09090b" ? 0.16 : 0.1),
+                  borderColor: withAlpha(color, theme.colors.background === "#09090b" ? 0.34 : 0.2),
+                },
+              ]}
+            >
+              <View style={[styles.liveBadgeDot, { backgroundColor: color }]} />
+              <Text style={[styles.liveBadgeText, { color }]}>Live</Text>
+            </View>
+          ) : null}
+          {showChevron ? (
+            <View style={styles.collapsibleChevronSlot}>
+              <CollapsibleChevron expanded={expanded} color={isActive ? theme.colors.textSecondary : theme.colors.textTertiary} />
+            </View>
+          ) : null}
+        </View>
+      </View>
     </Pressable>
   )
 }
@@ -182,7 +295,15 @@ function CollapsibleContent({
   )
 }
 
-function ReasoningPartView({ part, isStreamingComplete }: { part: ReasoningPart; isStreamingComplete: boolean }) {
+function ReasoningPartView({
+  part,
+  isActive = false,
+  isStreamingComplete,
+}: {
+  part: ReasoningPart
+  isActive?: boolean
+  isStreamingComplete: boolean
+}) {
   const [expanded, setExpanded] = useState(false)
   const text = part.text?.trim()
   if (!text) return null
@@ -195,7 +316,7 @@ function ReasoningPartView({ part, isStreamingComplete }: { part: ReasoningPart;
 
   return (
     <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
-      <BlurbRow label={label} action="thought" expanded={expanded} onPress={toggle} />
+      <BlurbRow label={label} action="thought" isActive={isActive} expanded={expanded} onPress={toggle} />
       {expanded ? (
         <CollapsibleContent style={styles.reasoningExpanded}>
           <MarkdownRenderer variant="reasoning" isComplete={isStreamingComplete}>
@@ -207,15 +328,20 @@ function ReasoningPartView({ part, isStreamingComplete }: { part: ReasoningPart;
   )
 }
 
-function ToolPartView({ part, onHydrateMessage }: { part: ToolPart; onHydrateMessage?: (messageID: string) => void }) {
+function ToolPartView({
+  part,
+  isActive = false,
+  onHydrateMessage,
+}: {
+  part: ToolPart
+  isActive?: boolean
+  onHydrateMessage?: (messageID: string) => void
+}) {
   const [expanded, setExpanded] = useState(false)
   const status = part.state.status
+  const toolName = part.tool
   const title = "title" in part.state ? part.state.title : part.tool
   const todos = useMemo(() => extractToolTodos(part), [part])
-  const activeTodos = useMemo(() => todos.filter((item) => isActiveTodo(item.status)), [todos])
-  const doneTodos = useMemo(() => todos.filter((item) => !isActiveTodo(item.status)), [todos])
-  const isTodoTool = part.tool === "todowrite" || part.tool === "todoread"
-  const pinnedTodo = isTodoTool
   const requestHydration = useCallback(() => {
     if (!onHydrateMessage) return
     onHydrateMessage(part.messageID)
@@ -234,15 +360,9 @@ function ToolPartView({ part, onHydrateMessage }: { part: ToolPart; onHydrateMes
     setExpanded((v) => !v)
   }, [expanded, part.state, requestHydration, status])
 
-  if (pinnedTodo) {
-    return (
-      <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
-        <TodoPanel todos={todos} active={activeTodos} done={doneTodos} />
-      </AnimatedView>
-    )
-  }
+  if (isTodoToolPart(part)) return null
 
-  const summary = summarizeToolLabel(part, title || part.tool, todos)
+  const summary = summarizeToolLabel(part, title || toolName, todos)
   const open = expanded
 
   return (
@@ -250,6 +370,7 @@ function ToolPartView({ part, onHydrateMessage }: { part: ToolPart; onHydrateMes
       <BlurbRow
         label={summary.label}
         action={summary.action}
+        isActive={isActive}
         expanded={open}
         onPress={toggle}
         showChevron
@@ -331,7 +452,7 @@ function ToolDetailView({
   }
 
   if (read?.type === "file" && read.content) {
-    const code = trimOutput(stripReadLineNumbers(read.content), 12000)
+    const code = trimOutput(stripReadLineNumbers(read.content), READ_BLURB_MAX_CHARS)
     const language = languageFromPath(read.path)
     return (
       <View style={styles.toolSection}>
@@ -340,7 +461,7 @@ function ToolDetailView({
             {read.path}
           </Text>
         ) : null}
-        <MarkdownRenderer>{`\`\`\`${language}\n${code}\n\`\`\``}</MarkdownRenderer>
+        <CodeBlock code={code} language={language} />
         <View style={styles.toolFooter}>
           {elapsed ? <Text style={[styles.toolMeta, { color: theme.colors.textTertiary }]}>{elapsed}</Text> : null}
           {truncatedOutput ? (
@@ -408,39 +529,62 @@ function ToolDetailView({
   )
 }
 
-function TodoPanel({ todos, active, done }: { todos: TodoItem[]; active: TodoItem[]; done: TodoItem[] }) {
+export function TodoPanel({
+  snapshot,
+  variant = "inline",
+  live = false,
+}: {
+  snapshot: TodoSnapshot
+  variant?: "inline" | "pinned"
+  live?: boolean
+}) {
   const theme = useTheme()
+  const completedSummary = `${snapshot.completedCount} of ${snapshot.todos.length} todos completed`
+  const standalone = variant === "inline"
 
   return (
-    <View style={[styles.todoPanel, { backgroundColor: theme.colors.surfaceRaised, borderColor: theme.colors.borderSubtle }]}>
+    <View
+      style={[
+        styles.todoPanel,
+        standalone
+          ? {
+              backgroundColor: theme.colors.surfaceRaised,
+              borderColor: theme.colors.borderSubtle,
+            }
+          : styles.todoPanelPinned,
+      ]}
+    >
       <View style={styles.todoHead}>
-        <Text style={[styles.todoTitle, { color: theme.colors.textSecondary }]}>Todo list</Text>
-        <Text style={[styles.todoMeta, { color: theme.colors.textTertiary }]}>
-          {active.length} active · {done.length} completed · {todos.length} total
-        </Text>
+        <View style={styles.todoHeadText}>
+          <Text style={[styles.todoSummary, { color: theme.colors.text }]}>
+            {completedSummary}
+          </Text>
+          {live ? (
+            <View
+              style={[
+                styles.todoLiveBadge,
+                {
+                  backgroundColor: withAlpha(theme.colors.accent, theme.colors.background === "#09090b" ? 0.14 : 0.08),
+                  borderColor: withAlpha(theme.colors.accent, theme.colors.background === "#09090b" ? 0.28 : 0.16),
+                },
+              ]}
+            >
+              <View style={[styles.todoLiveBadgeDot, { backgroundColor: theme.colors.accent }]} />
+              <Text style={[styles.todoLiveBadgeText, { color: theme.colors.accent }]}>Live</Text>
+            </View>
+          ) : null}
+        </View>
       </View>
 
-      {active.length > 0 ? (
-        <View style={styles.todoGroup}>
-          <Text style={[styles.todoGroupTitle, { color: theme.colors.statusBusy }]}>Active</Text>
-          {active.map((todo) => (
-            <TodoRow key={todo.id} todo={todo} />
-          ))}
-        </View>
-      ) : null}
-
-      {done.length > 0 ? (
-        <View style={styles.todoGroup}>
-          <Text style={[styles.todoGroupTitle, { color: theme.colors.statusIdle }]}>Completed</Text>
-          {done.map((todo) => (
-            <TodoRow key={todo.id} todo={todo} />
-          ))}
-        </View>
-      ) : null}
-
-      {todos.length === 0 ? (
+      {snapshot.todos.length === 0 ? (
         <Text style={[styles.todoEmpty, { color: theme.colors.textTertiary }]}>No todos yet</Text>
-      ) : null}
+      ) : (
+        <View style={styles.todoList}>
+          {snapshot.todos.map((todo) => (
+            <TodoRow key={todo.id} todo={todo} />
+          ))}
+        </View>
+      )}
     </View>
   )
 }
@@ -472,7 +616,7 @@ function TodoRow({ todo }: { todo: TodoItem }) {
   )
 }
 
-function FilePartView({ part }: { part: FilePart }) {
+function FilePartView({ part, isActive = false }: { part: FilePart; isActive?: boolean }) {
   const theme = useTheme()
   const [expanded, setExpanded] = useState(false)
   const name = part.filename || part.source?.path?.split("/").pop() || "Attached file"
@@ -490,7 +634,7 @@ function FilePartView({ part }: { part: FilePart }) {
 
   return (
     <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
-      <BlurbRow label={label} action="created" expanded={expanded} onPress={toggle} />
+      <BlurbRow label={label} action="created" isActive={isActive} expanded={expanded} onPress={toggle} />
       {expanded ? (
         <CollapsibleContent>
           <Text style={[styles.infoBody, { color: theme.colors.text }]} numberOfLines={1}>
@@ -522,7 +666,7 @@ function FilePartView({ part }: { part: FilePart }) {
   )
 }
 
-function SnapshotPartView({ part }: { part: SnapshotPart }) {
+function SnapshotPartView({ part, isActive = false }: { part: SnapshotPart; isActive?: boolean }) {
   const theme = useTheme()
   const [expanded, setExpanded] = useState(false)
 
@@ -534,7 +678,7 @@ function SnapshotPartView({ part }: { part: SnapshotPart }) {
 
   return (
     <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
-      <BlurbRow label={label} action="created" expanded={expanded} onPress={toggle} />
+      <BlurbRow label={label} action="created" isActive={isActive} expanded={expanded} onPress={toggle} />
       {expanded ? (
         <CollapsibleContent>
           <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{short(part.snapshot)}</Text>
@@ -544,7 +688,7 @@ function SnapshotPartView({ part }: { part: SnapshotPart }) {
   )
 }
 
-function PatchPartView({ part }: { part: PatchPart }) {
+function PatchPartView({ part, isActive = false }: { part: PatchPart; isActive?: boolean }) {
   const theme = useTheme()
   const [expanded, setExpanded] = useState(false)
   const visible = part.files.slice(0, 8)
@@ -557,7 +701,7 @@ function PatchPartView({ part }: { part: PatchPart }) {
 
   return (
     <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
-      <BlurbRow label={label} action="created" expanded={expanded} onPress={toggle} />
+      <BlurbRow label={label} action="created" isActive={isActive} expanded={expanded} onPress={toggle} />
       {expanded ? (
         <CollapsibleContent>
           <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>
@@ -579,7 +723,7 @@ function PatchPartView({ part }: { part: PatchPart }) {
   )
 }
 
-function AgentPartView({ part }: { part: AgentPart }) {
+function AgentPartView({ part, isActive = false }: { part: AgentPart; isActive?: boolean }) {
   const theme = useTheme()
   const [expanded, setExpanded] = useState(false)
 
@@ -591,7 +735,7 @@ function AgentPartView({ part }: { part: AgentPart }) {
 
   return (
     <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
-      <BlurbRow label={label} action="ran" expanded={expanded} onPress={toggle} />
+      <BlurbRow label={label} action="ran" isActive={isActive} expanded={expanded} onPress={toggle} />
       {expanded ? (
         <CollapsibleContent>
           <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{part.name}</Text>
@@ -601,7 +745,7 @@ function AgentPartView({ part }: { part: AgentPart }) {
   )
 }
 
-function RetryPartView({ part }: { part: RetryPart }) {
+function RetryPartView({ part, isActive = false }: { part: RetryPart; isActive?: boolean }) {
   const theme = useTheme()
   const [expanded, setExpanded] = useState(false)
   const error = part.error?.data?.message || "Unknown error"
@@ -614,7 +758,7 @@ function RetryPartView({ part }: { part: RetryPart }) {
 
   return (
     <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
-      <BlurbRow label={label} action="ran" expanded={expanded} onPress={toggle} />
+      <BlurbRow label={label} action="ran" isActive={isActive} expanded={expanded} onPress={toggle} />
       {expanded ? (
         <CollapsibleContent>
           <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{error}</Text>
@@ -624,7 +768,7 @@ function RetryPartView({ part }: { part: RetryPart }) {
   )
 }
 
-function SubtaskPartView({ part }: { part: SubtaskPart }) {
+function SubtaskPartView({ part, isActive = false }: { part: SubtaskPart; isActive?: boolean }) {
   const theme = useTheme()
   const [expanded, setExpanded] = useState(false)
 
@@ -636,7 +780,7 @@ function SubtaskPartView({ part }: { part: SubtaskPart }) {
 
   return (
     <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
-      <BlurbRow label={label} action="thought" expanded={expanded} onPress={toggle} />
+      <BlurbRow label={label} action="thought" isActive={isActive} expanded={expanded} onPress={toggle} />
       {expanded ? (
         <CollapsibleContent>
           <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{part.description}</Text>
@@ -648,7 +792,7 @@ function SubtaskPartView({ part }: { part: SubtaskPart }) {
   )
 }
 
-function CompactionPartView({ part }: { part: CompactionPart }) {
+function CompactionPartView({ part, isActive = false }: { part: CompactionPart; isActive?: boolean }) {
   const theme = useTheme()
   const [expanded, setExpanded] = useState(false)
 
@@ -661,7 +805,7 @@ function CompactionPartView({ part }: { part: CompactionPart }) {
 
   return (
     <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
-      <BlurbRow label={label} action="ran" expanded={expanded} onPress={toggle} />
+      <BlurbRow label={label} action="ran" isActive={isActive} expanded={expanded} onPress={toggle} />
       {expanded ? (
         <CollapsibleContent>
           <Text style={[styles.infoBody, { color: theme.colors.textSecondary }]}>{detail}</Text>
@@ -768,8 +912,12 @@ function inferToolAction(tool: string, title: string, todos: TodoItem[]): BlurbA
   return "thought"
 }
 
-function extractToolTodos(part: ToolPart) {
-  if (part.tool !== "todowrite" && part.tool !== "todoread") return []
+export function isTodoToolPart(part: Part | ToolPart): part is ToolPart {
+  return part.type === "tool" && (part.tool === "todowrite" || part.tool === "todoread")
+}
+
+export function extractToolTodos(part: ToolPart) {
+  if (!isTodoToolPart(part)) return []
   const fromInput = normalizeTodos(part.state.input?.todos)
   if (fromInput.length > 0) return sortTodos(fromInput)
   if (!("metadata" in part.state) || !part.state.metadata) return []
@@ -802,8 +950,46 @@ function sortTodos(todos: TodoItem[]) {
   })
 }
 
-function isActiveTodo(status: string) {
+export function isActiveTodo(status: string) {
   return status !== "completed" && status !== "cancelled"
+}
+
+function buildTodoSnapshot(part: ToolPart): TodoSnapshot | null {
+  if (!isTodoToolPart(part)) return null
+  const todos = extractToolTodos(part)
+  if (todos.length === 0) return null
+  const active = todos.filter((item) => isActiveTodo(item.status))
+  const done = todos.filter((item) => !isActiveTodo(item.status))
+  const completedCount = todos.filter((item) => item.status === "completed").length
+  return {
+    part,
+    todos,
+    active,
+    done,
+    completedCount,
+    isComplete: active.length === 0,
+  }
+}
+
+export function resolveLatestTodoSnapshot(parts: Part[]) {
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i]
+    if (!isTodoToolPart(part)) continue
+    const snapshot = buildTodoSnapshot(part)
+    if (snapshot) return snapshot
+  }
+  return null
+}
+
+export function resolveCompletedTodoSnapshot(parts: Part[], isStreamingComplete: boolean) {
+  if (!isStreamingComplete) return null
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i]
+    if (!isTodoToolPart(part)) continue
+    const snapshot = buildTodoSnapshot(part)
+    if (snapshot?.isComplete) return snapshot
+  }
+  return null
 }
 
 function todoStatusLabel(status: string) {
@@ -834,6 +1020,15 @@ function blurbActionColor(action: BlurbAction, colors: Palette) {
   if (action === "ran") return colors.accent
   if (action === "explored") return colors.warning
   return colors.textSecondary
+}
+
+function withAlpha(color: string, alpha: number) {
+  const normalized = color.trim()
+  if (!normalized.startsWith("#")) return color
+  const hex = normalized.slice(1)
+  if (hex.length !== 6) return color
+  const value = Math.max(0, Math.min(255, Math.round(alpha * 255)))
+  return `#${hex}${value.toString(16).padStart(2, "0")}`
 }
 
 function capitalizeInline(value: string) {
@@ -957,14 +1152,30 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   collapsibleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
     minHeight: 28,
-    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "transparent",
+    overflow: "hidden",
   },
   collapsibleRowPressed: {
     opacity: 0.6,
+  },
+  collapsibleRowGlow: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  collapsibleRowShimmer: {
+    position: "absolute",
+    top: -10,
+    bottom: -10,
+  },
+  collapsibleRowContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
   },
   blurbDot: {
     width: 7,
@@ -985,9 +1196,35 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
   collapsibleRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 8,
+  },
+  liveBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+  },
+  liveBadgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 999,
+  },
+  liveBadgeText: {
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: "700",
+    letterSpacing: 0.35,
+    textTransform: "uppercase",
+  },
+  collapsibleChevronSlot: {
     width: 18,
     minHeight: 16,
-    alignItems: "flex-end",
     justifyContent: "center",
   },
   collapsibleChevron: {
@@ -1019,30 +1256,52 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     gap: 10,
   },
+  todoPanelPinned: {
+    borderWidth: 0,
+    borderRadius: 0,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+  },
   todoHead: {
-    gap: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
   },
-  todoTitle: {
-    fontSize: 12,
-    lineHeight: 15,
+  todoHeadText: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  todoSummary: {
+    fontSize: 13,
+    lineHeight: 17,
     fontWeight: "600",
-    letterSpacing: 0.2,
-    textTransform: "uppercase",
   },
-  todoMeta: {
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: "500",
+  todoLiveBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
   },
-  todoGroup: {
-    gap: 6,
+  todoLiveBadgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 999,
   },
-  todoGroupTitle: {
-    fontSize: 11,
-    lineHeight: 14,
+  todoLiveBadgeText: {
+    fontSize: 10,
+    lineHeight: 12,
     fontWeight: "700",
-    letterSpacing: 0.4,
+    letterSpacing: 0.35,
     textTransform: "uppercase",
+  },
+  todoList: {
+    gap: 6,
   },
   todoItem: {
     flexDirection: "row",
