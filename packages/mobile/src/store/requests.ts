@@ -27,6 +27,7 @@ type QuestionAnswer = string[]
 type RequestState = {
   permissions: Permission[]
   questions: PendingQuestion[]
+  pendingCountBySession: Record<string, number>
   loading: boolean
   reset: () => void
   refresh: () => Promise<void>
@@ -53,15 +54,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
+function pendingCounts(permissions: Permission[], questions: PendingQuestion[]) {
+  const counts: Record<string, number> = {}
+  for (const permission of permissions) {
+    counts[permission.sessionID] = (counts[permission.sessionID] ?? 0) + 1
+  }
+  for (const question of questions) {
+    counts[question.sessionID] = (counts[question.sessionID] ?? 0) + 1
+  }
+  return counts
+}
+
 export const useRequests = createStore<RequestState>((set, get) => ({
   permissions: [],
   questions: [],
+  pendingCountBySession: {},
   loading: false,
 
   reset: () =>
     set({
       permissions: [],
       questions: [],
+      pendingCountBySession: {},
       loading: false,
     }),
 
@@ -75,6 +89,10 @@ export const useRequests = createStore<RequestState>((set, get) => ({
       set({
         permissions: Array.isArray(permissions) ? permissions : [],
         questions: Array.isArray(questions) ? questions : [],
+        pendingCountBySession: pendingCounts(
+          Array.isArray(permissions) ? permissions : [],
+          Array.isArray(questions) ? questions : [],
+        ),
         loading: false,
       })
     } catch {
@@ -108,6 +126,10 @@ export const useRequests = createStore<RequestState>((set, get) => ({
     })
     set((state) => ({
       questions: state.questions.filter((item) => item.id !== requestID),
+      pendingCountBySession: pendingCounts(
+        state.permissions,
+        state.questions.filter((item) => item.id !== requestID),
+      ),
     }))
   },
 
@@ -117,6 +139,10 @@ export const useRequests = createStore<RequestState>((set, get) => ({
     })
     set((state) => ({
       questions: state.questions.filter((item) => item.id !== requestID),
+      pendingCountBySession: pendingCounts(
+        state.permissions,
+        state.questions.filter((item) => item.id !== requestID),
+      ),
     }))
   },
 
@@ -126,15 +152,26 @@ export const useRequests = createStore<RequestState>((set, get) => ({
       if (idx >= 0) {
         const next = [...state.permissions]
         next[idx] = permission
-        return { permissions: next }
+        return {
+          permissions: next,
+          pendingCountBySession: pendingCounts(next, state.questions),
+        }
       }
-      return { permissions: [permission, ...state.permissions] }
+      const next = [permission, ...state.permissions]
+      return {
+        permissions: next,
+        pendingCountBySession: pendingCounts(next, state.questions),
+      }
     })
   },
 
   _removePermission: (requestID) => {
     set((state) => ({
       permissions: state.permissions.filter((item) => item.id !== requestID),
+      pendingCountBySession: pendingCounts(
+        state.permissions.filter((item) => item.id !== requestID),
+        state.questions,
+      ),
     }))
   },
 }))

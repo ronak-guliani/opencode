@@ -1,65 +1,47 @@
-import { useCallback, useEffect, useMemo, memo, useRef, useState } from "react"
-import {
-  View,
-  Text,
-  TextInput,
-  Pressable,
-  StyleSheet,
-  RefreshControl,
-  Alert,
-} from "react-native"
+import { useCallback, useEffect, useMemo, memo, useState } from "react"
+import { View, Text, TextInput, Pressable, StyleSheet, RefreshControl, Alert } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
-import * as ZeegoContextMenu from "zeego/context-menu"
 import * as Haptics from "expo-haptics"
 import * as Clipboard from "expo-clipboard"
+import Feather from "@expo/vector-icons/Feather"
+import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons"
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list"
+import { useGlobalSearchParams } from "expo-router"
 import type { Project, Session } from "@opencode-ai/sdk/client"
 import { useSessions } from "../../store/sessions"
 import { useConnection } from "../../store/connection"
 import { useTheme } from "../../theme"
 import { relative } from "../../util/format"
 import { SessionListSkeleton } from "../skeleton"
+import { AnimatedStatusDot } from "../status-dot"
 import { client } from "../../api/client"
-import { addCrashBreadcrumb } from "../../perf/crash-breadcrumbs"
 import { ServerSwitcher } from "./server-switcher"
 
-// React 19 JSX compat casts
-const MenuRoot = ZeegoContextMenu.Root as React.ComponentType<{
-  onOpenChange?: (open: boolean) => void
-  children?: React.ReactNode
-}>
-const MenuTrigger = ZeegoContextMenu.Trigger as React.ComponentType<{
-  asChild?: boolean
-  action?: "press" | "longPress"
-  children?: React.ReactElement
-}>
-const MenuContent = ZeegoContextMenu.Content as React.ComponentType<{ children?: React.ReactNode }>
-const MenuItem = ZeegoContextMenu.Item as React.ComponentType<{
-  key: string
-  onSelect?: () => void
-  destructive?: boolean
-  children?: React.ReactNode
-}>
-const MenuItemTitle = ZeegoContextMenu.ItemTitle as React.ComponentType<{ children?: React.ReactNode }>
-const MenuItemIcon = ZeegoContextMenu.ItemIcon as React.ComponentType<{
-  ios?: { name: string }
-  children?: React.ReactNode
-}>
 const Glass = LiquidGlassView as React.ComponentType<{
   interactive?: boolean
   style?: unknown
   children?: React.ReactNode
 }>
+const FeatherIcon = Feather as unknown as React.ComponentType<{
+  name: string
+  size: number
+  color: string
+  style?: unknown
+}>
 const SIDEBAR_DRAW_DISTANCE = 700
 const SESSION_RENDER_CHUNK = 20
-const SESSION_SELECT_DEBOUNCE_MS = 280
+const MaterialIcon = MaterialCommunityIcons as unknown as React.ComponentType<{
+  name: string
+  size: number
+  color: string
+  style?: unknown
+}>
 
 type Props = {
   onSelect: (session: Session) => void | Promise<void>
   onNew: (worktree?: string) => void | Promise<void>
   onSettings: () => void
-  canSelectSession?: () => boolean
   sidebarVisible: boolean
   onServerSwitched?: () => void
 }
@@ -72,11 +54,20 @@ type SectionItem = {
   active: boolean
 }
 
+function resolveRouteSessionID(value: string | string[] | undefined) {
+  if (typeof value === "string") return value || null
+  if (Array.isArray(value)) {
+    for (const candidate of value) {
+      if (candidate) return candidate
+    }
+  }
+  return null
+}
+
 export const Sidebar = memo(function Sidebar({
   onSelect,
   onNew,
   onSettings,
-  canSelectSession,
   sidebarVisible,
   onServerSwitched,
 }: Props) {
@@ -89,10 +80,13 @@ export const Sidebar = memo(function Sidebar({
   const fetchStatuses = useSessions((s) => s.fetchStatuses)
   const archive = useSessions((s) => s.archive)
   const deleteSession = useSessions((s) => s.delete)
+  const currentSessionID = useSessions((s) => s.current)
   const directory = useConnection((s) => s.directory)
+  const routeParams = useGlobalSearchParams<{ id?: string | string[] }>()
   const [query, setQuery] = useState("")
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
-  const lastSelectAtRef = useRef(0)
+  const routeSessionID = useMemo(() => resolveRouteSessionID(routeParams.id), [routeParams.id])
+  const activeSessionID = routeSessionID ?? currentSessionID
 
   const filteredSessions = useMemo(() => {
     const deduped = dedupeSessionsByID(sessions)
@@ -140,15 +134,16 @@ export const Sidebar = memo(function Sidebar({
     return orderedProjects.map((project) => {
       const sessions = grouped[project.worktree] ?? []
       const isCollapsed = collapsed[project.worktree] ?? false
+      const hasActiveSession = !!activeSessionID && sessions.some((session) => session.id === activeSessionID)
       return {
         project,
         sessions,
         count: sessions.length,
         collapsed: isCollapsed,
-        active: project.worktree === directory,
+        active: hasActiveSession || project.worktree === directory,
       }
     })
-  }, [filteredSessions, projectsWithFallback, directory, collapsed])
+  }, [activeSessionID, collapsed, directory, filteredSessions, projectsWithFallback])
 
   const handleArchive = useCallback(
     (id: string) => {
@@ -232,30 +227,15 @@ export const Sidebar = memo(function Sidebar({
           item={item}
           onToggle={toggleProject}
           onNew={handleCreateSession}
-          onSelect={(session) => {
-            const now = Date.now()
-            if (now - lastSelectAtRef.current < SESSION_SELECT_DEBOUNCE_MS) {
-              addCrashBreadcrumb(
-                "sidebar:select-debounced",
-                {
-                  sessionID: session.id,
-                  sinceLastMs: now - lastSelectAtRef.current,
-                },
-                "warn",
-              )
-              return
-            }
-            lastSelectAtRef.current = now
-            void onSelect(session)
-          }}
+          onSelect={(session) => void onSelect(session)}
           onArchive={handleArchive}
           onDelete={handleDelete}
           onShare={handleShare}
-          canSelectSession={canSelectSession}
+          activeSessionID={activeSessionID}
         />
       )
     },
-    [handleArchive, handleDelete, handleShare, onSelect, canSelectSession, toggleProject, handleCreateSession],
+    [activeSessionID, handleArchive, handleCreateSession, handleDelete, handleShare, onSelect, toggleProject],
   )
 
   const keyExtractor = useCallback((item: SectionItem) => {
@@ -281,7 +261,7 @@ export const Sidebar = memo(function Sidebar({
 
       {isLiquidGlassSupported ? (
         <Glass interactive style={styles.searchGlass}>
-          <SearchIcon color={theme.colors.textTertiary} />
+          <FeatherIcon style={styles.searchIcon} name="search" size={14} color={theme.colors.textTertiary} />
           <TextInput
             style={[styles.searchInput, { color: theme.colors.text }]}
             value={query}
@@ -304,7 +284,7 @@ export const Sidebar = memo(function Sidebar({
             },
           ]}
         >
-          <SearchIcon color={theme.colors.textTertiary} />
+          <FeatherIcon style={styles.searchIcon} name="search" size={14} color={theme.colors.textTertiary} />
           <TextInput
             style={[styles.searchInput, { color: theme.colors.text }]}
             value={query}
@@ -386,12 +366,16 @@ const ProjectRow = memo(function ProjectRow({
     >
       <View style={styles.projectMain}>
         <View style={styles.projectTitleRow}>
-          <FolderIcon color={theme.colors.textSecondary} />
+          <FeatherIcon name="folder" size={14} color={theme.colors.textSecondary} />
           <Text style={[styles.projectTitle, { color: theme.colors.text }]} numberOfLines={1}>
             {name}
           </Text>
         </View>
-        <Text style={[styles.projectPath, { color: theme.colors.textTertiary }]} numberOfLines={1} ellipsizeMode="middle">
+        <Text
+          style={[styles.projectPath, { color: theme.colors.textTertiary }]}
+          numberOfLines={1}
+          ellipsizeMode="middle"
+        >
           {item.project.worktree}
         </Text>
       </View>
@@ -404,10 +388,15 @@ const ProjectRow = memo(function ProjectRow({
           }}
           hitSlop={8}
         >
-          <PlusIcon color={theme.colors.textSecondary} />
+          <FeatherIcon name="plus" size={14} color={theme.colors.textSecondary} />
         </Pressable>
         <Text style={[styles.projectCount, { color: theme.colors.textTertiary }]}>{item.count}</Text>
-        <Text style={[styles.chevronGlyph, { color: theme.colors.textSecondary }]}>{item.collapsed ? "›" : "⌄"}</Text>
+        <FeatherIcon
+          style={styles.chevronGlyph}
+          name={item.collapsed ? "chevron-right" : "chevron-down"}
+          size={14}
+          color={theme.colors.textSecondary}
+        />
       </View>
     </Pressable>
   )
@@ -421,7 +410,7 @@ const ProjectSection = memo(function ProjectSection({
   onArchive,
   onDelete,
   onShare,
-  canSelectSession,
+  activeSessionID,
 }: {
   item: SectionItem
   onToggle: (worktree: string) => void
@@ -430,7 +419,7 @@ const ProjectSection = memo(function ProjectSection({
   onArchive: (id: string) => void
   onDelete: (id: string) => void
   onShare: (id: string) => void
-  canSelectSession?: () => boolean
+  activeSessionID: string | null
 }) {
   const theme = useTheme()
   const [visibleCount, setVisibleCount] = useState(SESSION_RENDER_CHUNK)
@@ -450,14 +439,17 @@ const ProjectSection = memo(function ProjectSection({
       {!item.collapsed && item.sessions.length > 0 ? (
         <View style={[styles.sessionGroup, { borderLeftColor: theme.colors.borderSubtle }]}>
           {visibleSessions.map((session, index) => (
-            <View key={session.id} style={[styles.sessionSlot, index === visibleSessions.length - 1 && styles.sessionSlotLast]}>
+            <View
+              key={session.id}
+              style={[styles.sessionSlot, index === visibleSessions.length - 1 && styles.sessionSlotLast]}
+            >
               <SessionRow
                 session={session}
                 onSelect={onSelect}
                 onArchive={onArchive}
                 onDelete={onDelete}
                 onShare={onShare}
-                canSelectSession={canSelectSession}
+                activeSessionID={activeSessionID}
               />
             </View>
           ))}
@@ -490,48 +482,42 @@ const SessionRow = memo(function SessionRow({
   onArchive,
   onDelete,
   onShare,
-  canSelectSession,
+  activeSessionID,
 }: {
   session: Session
   onSelect: (session: Session) => void | Promise<void>
   onArchive: (id: string) => void
   onDelete: (id: string) => void
   onShare: (id: string) => void
-  canSelectSession?: () => boolean
+  activeSessionID: string | null
 }) {
   const theme = useTheme()
-  const selected = useSessions((s) => s.current === session.id)
-
-  const handleMenuOpen = useCallback(() => {
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
-  }, [])
+  const selected = activeSessionID === session.id
 
   const handleSelect = useCallback(() => {
-    if (canSelectSession && !canSelectSession()) {
-      addCrashBreadcrumb(
-        "sidebar:select-blocked",
-        {
-          sessionID: session.id,
-          sessionTitle: session.title || "Untitled session",
-        },
-        "warn",
-      )
-      return
-    }
     void onSelect(session)
-  }, [onSelect, session, canSelectSession])
+  }, [onSelect, session])
 
-  const rowBody = (
+  const handleLongPress = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+    Alert.alert(session.title || "Session actions", undefined, [
+      { text: "Share", onPress: () => void onShare(session.id) },
+      { text: "Archive", onPress: () => void onArchive(session.id) },
+      { text: "Delete", style: "destructive", onPress: () => void onDelete(session.id) },
+      { text: "Cancel", style: "cancel" },
+    ])
+  }, [onArchive, onDelete, onShare, session.id, session.title])
+
+  return (
     <Pressable
       style={({ pressed }) => [
         styles.sessionRow,
-        {
-          backgroundColor: selected ? theme.colors.surfaceRaised : "transparent",
-          borderRadius: theme.radii.md,
-          opacity: pressed ? 0.72 : 1,
-        },
+        selected && { backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.accent },
+        { opacity: pressed ? 0.72 : 1 },
       ]}
       onPress={handleSelect}
+      onLongPress={handleLongPress}
+      delayLongPress={260}
       hitSlop={6}
     >
       <View style={styles.sessionMain}>
@@ -541,29 +527,6 @@ const SessionRow = memo(function SessionRow({
         <Text style={[styles.sessionMeta, { color: theme.colors.textTertiary }]}>{relative(session.time.updated)}</Text>
       </View>
     </Pressable>
-  )
-
-  return (
-    <MenuRoot onOpenChange={(open) => open && handleMenuOpen()}>
-      <MenuTrigger asChild action="longPress">
-        {rowBody}
-      </MenuTrigger>
-
-      <MenuContent>
-        <MenuItem key="share" onSelect={() => onShare(session.id)}>
-          <MenuItemTitle>Share</MenuItemTitle>
-          <MenuItemIcon ios={{ name: "square.and.arrow.up" }} />
-        </MenuItem>
-        <MenuItem key="archive" onSelect={() => onArchive(session.id)}>
-          <MenuItemTitle>Archive</MenuItemTitle>
-          <MenuItemIcon ios={{ name: "archivebox" }} />
-        </MenuItem>
-        <MenuItem key="delete" onSelect={() => onDelete(session.id)} destructive>
-          <MenuItemTitle>Delete</MenuItemTitle>
-          <MenuItemIcon ios={{ name: "trash" }} />
-        </MenuItem>
-      </MenuContent>
-    </MenuRoot>
   )
 })
 
@@ -578,15 +541,19 @@ const HeaderIconButton = memo(function HeaderIconButton({
 }) {
   const theme = useTheme()
   const color = theme.colors.textSecondary
+  const iconName =
+    icon === "compose"
+      ? "edit-3"
+      : icon === "collapse-all"
+        ? "chevrons-up"
+        : icon === "expand-all"
+          ? "chevrons-down"
+          : "settings"
   const iconNode =
     icon === "compose" ? (
-      <ComposeIcon color={color} />
-    ) : icon === "collapse-all" ? (
-      <CollapseAllIcon color={color} mode="collapse" />
-    ) : icon === "expand-all" ? (
-      <CollapseAllIcon color={color} mode="expand" />
+      <MaterialIcon style={styles.composeSymbol} name="square-edit-outline" size={16} color={color} />
     ) : (
-      <Text style={[styles.settingsGlyph, { color }]}>⚙︎</Text>
+      <FeatherIcon name={iconName} size={14} color={color} />
     )
 
   if (isLiquidGlassSupported) {
@@ -620,59 +587,6 @@ const HeaderIconButton = memo(function HeaderIconButton({
     >
       {iconNode}
     </Pressable>
-  )
-})
-
-const FolderIcon = memo(function FolderIcon({ color }: { color: string }) {
-  return (
-    <View style={styles.folderIcon}>
-      <View style={[styles.folderTab, { borderColor: color }]} />
-      <View style={[styles.folderBody, { borderColor: color }]} />
-    </View>
-  )
-})
-
-const PlusIcon = memo(function PlusIcon({ color }: { color: string }) {
-  return (
-    <View style={styles.plusIcon}>
-      <View style={[styles.plusHorizontal, { backgroundColor: color }]} />
-      <View style={[styles.plusVertical, { backgroundColor: color }]} />
-    </View>
-  )
-})
-
-const ComposeIcon = memo(function ComposeIcon({ color }: { color: string }) {
-  return (
-    <View style={styles.composeIcon}>
-      <View style={[styles.composeBox, { borderColor: color }]} />
-      <View style={[styles.composePencilShaft, { backgroundColor: color }]} />
-      <View style={[styles.composePencilTip, { borderLeftColor: color }]} />
-    </View>
-  )
-})
-
-const SearchIcon = memo(function SearchIcon({ color }: { color: string }) {
-  return (
-    <View style={styles.searchGlyph}>
-      <View style={[styles.searchGlyphCircle, { borderColor: color }]} />
-      <View style={[styles.searchGlyphHandle, { backgroundColor: color }]} />
-    </View>
-  )
-})
-
-const CollapseAllIcon = memo(function CollapseAllIcon({
-  color,
-  mode,
-}: {
-  color: string
-  mode: "collapse" | "expand"
-}) {
-  return (
-    <View style={styles.collapseAllIcon}>
-      <View style={[styles.collapseLine, { backgroundColor: color }]} />
-      <View style={[styles.collapseLine, { backgroundColor: color }]} />
-      <Text style={[styles.collapseChevron, { color }]}>{mode === "collapse" ? "⌃" : "⌄"}</Text>
-    </View>
   )
 })
 
@@ -722,6 +636,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
+  },
+  composeSymbol: {
+    marginTop: 0.5,
   },
   searchContainer: {
     marginHorizontal: 16,
@@ -810,6 +727,14 @@ const styles = StyleSheet.create({
     paddingRight: 10,
     paddingVertical: 6,
     gap: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "transparent",
+  },
+  sessionRowSelected: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.15)",
   },
   sessionGroup: {
     marginLeft: 22,
@@ -866,131 +791,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   chevronGlyph: {
-    width: 10,
-    fontSize: 16,
-    lineHeight: 16,
+    width: 14,
     textAlign: "center",
   },
-  settingsGlyph: {
-    fontSize: 14,
-    fontWeight: "600",
-    lineHeight: 16,
-  },
-  folderIcon: {
-    width: 16,
-    height: 12,
-  },
-  folderTab: {
-    position: "absolute",
-    top: 0,
-    left: 1,
-    width: 6,
-    height: 4,
-    borderWidth: 1,
-    borderBottomWidth: 0,
-    borderTopLeftRadius: 2,
-    borderTopRightRadius: 2,
-  },
-  folderBody: {
-    position: "absolute",
-    top: 3,
-    left: 0,
-    width: 16,
-    height: 9,
-    borderWidth: 1,
-    borderRadius: 2,
-  },
-  plusIcon: {
-    width: 14,
-    height: 14,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  plusHorizontal: {
-    position: "absolute",
-    width: 8,
-    height: 1.5,
-    borderRadius: 1,
-  },
-  plusVertical: {
-    position: "absolute",
-    width: 1.5,
-    height: 8,
-    borderRadius: 1,
-  },
-  composeIcon: {
-    width: 16,
-    height: 16,
-  },
-  composeBox: {
-    position: "absolute",
-    left: 1.2,
-    bottom: 1.2,
-    width: 10.8,
-    height: 10.8,
-    borderWidth: 1.4,
-    borderRadius: 2.4,
-  },
-  composePencilShaft: {
-    position: "absolute",
-    right: 0.6,
-    top: 1.2,
-    width: 9,
-    height: 1.7,
-    borderRadius: 1,
-    transform: [{ rotate: "-38deg" }],
-  },
-  composePencilTip: {
-    position: "absolute",
-    right: 6.8,
-    top: 4.9,
-    width: 0,
-    height: 0,
-    borderTopWidth: 1.8,
-    borderBottomWidth: 1.8,
-    borderRightWidth: 0,
-    borderLeftWidth: 2.8,
-    borderTopColor: "transparent",
-    borderBottomColor: "transparent",
-    transform: [{ rotate: "-38deg" }],
-  },
-  searchGlyph: {
-    width: 14,
-    height: 14,
+  searchIcon: {
     marginLeft: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  searchGlyphCircle: {
-    width: 9,
-    height: 9,
-    borderWidth: 1.5,
-    borderRadius: 5,
-  },
-  searchGlyphHandle: {
-    position: "absolute",
-    width: 5,
-    height: 1.5,
-    borderRadius: 1,
-    transform: [{ translateX: 4 }, { translateY: 4 }, { rotate: "45deg" }],
-  },
-  collapseAllIcon: {
-    width: 16,
-    height: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 2,
-  },
-  collapseLine: {
-    width: 10,
-    height: 1.5,
-    borderRadius: 1,
-  },
-  collapseChevron: {
-    position: "absolute",
-    bottom: -2,
-    fontSize: 10,
-    lineHeight: 10,
-    fontWeight: "700",
+    marginRight: 2,
   },
 })

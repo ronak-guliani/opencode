@@ -1,33 +1,56 @@
-import { useState, useCallback } from "react"
-import { View, TextInput, Pressable, Text, StyleSheet, Platform, Alert, type LayoutChangeEvent } from "react-native"
+import { useState, useCallback, useEffect, useRef } from "react"
+import { View, TextInput, Pressable, StyleSheet, Platform, Alert, type LayoutChangeEvent } from "react-native"
 import { KeyboardStickyView } from "react-native-keyboard-controller"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
-import { LiquidGlassContainerView, LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
+import Feather from "@expo/vector-icons/Feather"
 import * as Haptics from "expo-haptics"
 import { SendMessageError, useMessages } from "../../store/messages"
 import { useIsSending, useSessionStatus } from "../../api/hooks"
-import { ModelPicker, ModelPickerIconButton } from "../model-picker"
 import { useChat } from "./provider"
 import { useTheme } from "../../theme"
+import { type TodoSnapshot, TodoPanel } from "./part"
+const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
+
+type PinnedTodo = {
+  snapshot: TodoSnapshot
+  live: boolean
+}
 
 type Props = {
   sessionId: string
+  pinnedTodo?: PinnedTodo | null
 }
 
-export function Composer({ sessionId }: Props) {
+export function Composer({ sessionId, pinnedTodo = null }: Props) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
   const [text, setText] = useState("")
+  const [todoExpanded, setTodoExpanded] = useState(true)
+  const previousTodoPartID = useRef("")
   const send = useMessages((s) => s.send)
   const abort = useMessages((s) => s.abort)
   const sending = useIsSending(sessionId)
   const status = useSessionStatus(sessionId)
   const { setComposerH } = useChat()
-  const [pickerVisible, setPickerVisible] = useState(false)
-  const [pickerAnchor, setPickerAnchor] = useState<{ x: number; y: number } | null>(null)
 
   const busy = status?.type === "busy"
   const trimmedText = text.trim()
+
+  useEffect(() => {
+    if (!pinnedTodo) {
+      previousTodoPartID.current = ""
+      setTodoExpanded(true)
+      return
+    }
+    if (previousTodoPartID.current !== pinnedTodo.snapshot.part.id) {
+      previousTodoPartID.current = pinnedTodo.snapshot.part.id
+      setTodoExpanded(true)
+      return
+    }
+    if (pinnedTodo.live) {
+      setTodoExpanded(true)
+    }
+  }, [pinnedTodo?.live, pinnedTodo?.snapshot.part.id])
 
   const handleSend = useCallback(async () => {
     const content = text.trim()
@@ -61,51 +84,23 @@ export function Composer({ sessionId }: Props) {
   }>
 
   const sendButton = busy ? (
-    <Pressable style={[styles.sendButton, { backgroundColor: theme.colors.error }]} onPress={handleAbort}>
-      <Text style={[styles.sendIcon, { color: "#fff" }]}>{"\u25A0"}</Text>
+    <Pressable style={[styles.sendButton, { backgroundColor: "#fff" }]} onPress={handleAbort} accessibilityLabel="Stop response">
+      <FeatherIcon name="square" size={10} color="#111827" />
     </Pressable>
   ) : (
     <Pressable
       style={[
         styles.sendButton,
         {
-          backgroundColor: trimmedText ? theme.colors.accent : theme.colors.surfaceRaised,
+          backgroundColor: trimmedText ? "#fff" : theme.colors.surfaceRaised,
         },
       ]}
       onPress={handleSend}
       disabled={!trimmedText || sending}
+      accessibilityLabel="Send message"
     >
-      <Text
-        style={[
-          styles.sendIcon,
-          {
-            color: trimmedText ? theme.colors.accentText : theme.colors.textTertiary,
-          },
-        ]}
-      >
-        {"\u2191"}
-      </Text>
+      <FeatherIcon name="arrow-up" size={14} color={trimmedText ? "#111827" : theme.colors.textTertiary} />
     </Pressable>
-  )
-
-  const GlassContainer = LiquidGlassContainerView as React.ComponentType<{
-    spacing?: number
-    style?: unknown
-    children?: React.ReactNode
-  }>
-  const Glass = LiquidGlassView as React.ComponentType<{
-    interactive?: boolean
-    style?: unknown
-    children?: React.ReactNode
-  }>
-
-  const modelButton = (
-    <ModelPickerIconButton
-      onPress={(point) => {
-        setPickerAnchor(point)
-        setPickerVisible(true)
-      }}
-    />
   )
 
   return (
@@ -114,148 +109,106 @@ export function Composer({ sessionId }: Props) {
         style={[
           styles.container,
           {
-            backgroundColor: isLiquidGlassSupported ? "transparent" : theme.colors.composerBackground,
-            borderTopColor: isLiquidGlassSupported ? "transparent" : theme.colors.composerBorder,
             paddingBottom: Math.max(insets.bottom, 8),
           },
         ]}
         onLayout={handleLayout}
       >
-        {isLiquidGlassSupported ? (
-          <GlassContainer spacing={8} style={styles.glassRow}>
-            <Glass interactive style={styles.glassCircle}>
-              {modelButton}
-            </Glass>
-            <Glass interactive style={[styles.glassInput, { borderRadius: 21 }]}>
-              <View style={styles.inputShell}>
-                <TextInput
-                  style={[styles.input, { color: theme.colors.text }]}
-                  value={text}
-                  onChangeText={setText}
-                  placeholder="Send a message..."
-                  placeholderTextColor={theme.colors.textTertiary}
-                  multiline
-                  maxLength={100000}
-                  editable={!sending}
-                  returnKeyType="default"
-                  blurOnSubmit={false}
+        <View
+          style={[
+            styles.composerCard,
+            {
+              backgroundColor: theme.colors.surface,
+              borderColor: theme.colors.border + "99",
+            },
+          ]}
+        >
+          {pinnedTodo ? (
+            <>
+              <View style={styles.todoPinnedSection}>
+                <TodoPanel
+                  snapshot={pinnedTodo.snapshot}
+                  expanded={todoExpanded}
+                  live={pinnedTodo.live}
+                  onToggle={() => setTodoExpanded((current) => !current)}
                 />
-                {sendButton}
               </View>
-            </Glass>
-          </GlassContainer>
-        ) : (
-          <View style={styles.fallbackRow}>
-            <View style={[styles.fallbackCircle, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-              {modelButton}
-            </View>
-            <View
-              style={[
-                styles.inputRow,
-                {
-                  backgroundColor: theme.colors.background,
-                  borderColor: theme.colors.border,
-                },
-              ]}
-            >
-              <View style={styles.inputShell}>
-                <TextInput
-                  style={[styles.input, { color: theme.colors.text }]}
-                  value={text}
-                  onChangeText={setText}
-                  placeholder="Send a message..."
-                  placeholderTextColor={theme.colors.textTertiary}
-                  multiline
-                  maxLength={100000}
-                  editable={!sending}
-                  returnKeyType="default"
-                  blurOnSubmit={false}
-                />
-                {sendButton}
-              </View>
-            </View>
+              <View style={[styles.todoDivider, { borderTopColor: theme.colors.border + "99" }]} />
+            </>
+          ) : null}
+          <View style={styles.inputRow}>
+            <TextInput
+              style={[styles.input, { color: theme.colors.text }]}
+              value={text}
+              onChangeText={setText}
+              placeholder="Ask anything"
+              placeholderTextColor={theme.colors.textTertiary}
+              multiline
+              maxLength={100000}
+              editable={!sending}
+              returnKeyType="default"
+              blurOnSubmit={false}
+            />
+            {sendButton}
           </View>
-        )}
+        </View>
       </View>
-      <ModelPicker visible={pickerVisible} onClose={() => setPickerVisible(false)} anchor={pickerAnchor} />
     </Sticky>
   )
 }
 
 const styles = StyleSheet.create({
   container: {
-    borderTopWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 10,
     paddingTop: 6,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.06,
+        shadowRadius: 10,
+      },
+      android: {
+        elevation: 1,
+      },
+    }),
   },
-  glassRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  glassCircle: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    overflow: "hidden",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  glassInput: {
-    flex: 1,
-    minHeight: 42,
-    justifyContent: "center",
-    paddingHorizontal: 0,
-    paddingVertical: 0,
+  composerCard: {
+    borderWidth: 1,
+    borderRadius: 24,
     overflow: "hidden",
   },
-  fallbackRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+  todoPinnedSection: {
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 12,
   },
-  fallbackCircle: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    borderWidth: StyleSheet.hairlineWidth,
-    justifyContent: "center",
-    alignItems: "center",
+  todoDivider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   inputRow: {
-    flex: 1,
-    minHeight: 42,
-    borderWidth: 1,
-    borderRadius: 21,
-    justifyContent: "center",
-    paddingHorizontal: 0,
-    paddingVertical: 0,
-  },
-  inputShell: {
-    minHeight: 42,
+    minHeight: 44,
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-end",
     paddingLeft: 14,
-    paddingRight: 2,
+    paddingRight: 6,
+    paddingVertical: 3,
   },
   input: {
     flex: 1,
     fontSize: 15,
-    lineHeight: 23,
+    lineHeight: 21,
     minHeight: 26,
-    maxHeight: 96,
-    paddingVertical: Platform.OS === "ios" ? 5 : 3,
+    maxHeight: 104,
+    paddingTop: Platform.OS === "ios" ? 7 : 4,
+    paddingBottom: Platform.OS === "ios" ? 7 : 4,
     paddingRight: 8,
   },
   sendButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     justifyContent: "center",
     alignItems: "center",
-  },
-  sendIcon: {
-    fontSize: 14,
-    fontWeight: "700",
   },
 })

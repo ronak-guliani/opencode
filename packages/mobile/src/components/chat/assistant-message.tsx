@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, type ReactNode } from "react"
+import { memo, useCallback, useMemo, useRef, type ReactNode } from "react"
 import { View, Text, StyleSheet, Pressable, Alert } from "react-native"
 import Feather from "@expo/vector-icons/Feather"
 import type { AssistantMessage as AssistantMessageData, Message, Part } from "@opencode-ai/sdk/client"
@@ -7,7 +7,7 @@ import * as Clipboard from "expo-clipboard"
 import { useMessageParts } from "../../api/hooks"
 import { useMessages } from "../../store/messages"
 import { useTheme } from "../../theme"
-import { PartRenderer } from "./part"
+import { isTodoToolPart, PartRenderer } from "./part"
 
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
 
@@ -17,14 +17,21 @@ type Props = {
   diffFooter?: ReactNode
 }
 
-export const AssistantMessage = memo(function AssistantMessage({ message, showFooter = false, diffFooter = null }: Props) {
+export const AssistantMessage = memo(function AssistantMessage({
+  message,
+  showFooter = false,
+  diffFooter = null,
+}: Props) {
   const theme = useTheme()
   const parts = useMessageParts(message.id)
   const hydrateMessage = useMessages((s) => s.hydrateMessage)
   const send = useMessages((s) => s.send)
+  const copyCacheRef = useRef<{ key: string; text: string }>({ key: "", text: "" })
   const totalTokens = message.tokens.input + message.tokens.output + message.tokens.reasoning
-  const copyText = useMemo(() => buildCopyText(parts), [parts])
+  const copyKey = useMemo(() => buildCopyCacheKey(parts), [parts])
   const canRetry = !!message.time.completed
+  const visibleParts = useMemo(() => parts.filter((part) => !isTodoToolPart(part)), [parts])
+  const activePartID = useMemo(() => resolveActivePartID(visibleParts, canRetry), [canRetry, visibleParts])
   const onHydrateMessage = useCallback(
     (messageID: string) => {
       void hydrateMessage(message.sessionID, messageID)
@@ -32,10 +39,15 @@ export const AssistantMessage = memo(function AssistantMessage({ message, showFo
     [hydrateMessage, message.sessionID],
   )
   const onCopy = useCallback(() => {
+    let copyText = copyCacheRef.current.text
+    if (copyCacheRef.current.key !== copyKey) {
+      copyText = buildCopyText(parts)
+      copyCacheRef.current = { key: copyKey, text: copyText }
+    }
     if (!copyText.trim()) return
     void Haptics.selectionAsync()
     void Clipboard.setStringAsync(copyText)
-  }, [copyText])
+  }, [copyKey, parts])
 
   const onRetry = useCallback(() => {
     if (!canRetry) return
@@ -48,16 +60,17 @@ export const AssistantMessage = memo(function AssistantMessage({ message, showFo
     })
   }, [canRetry, message.id, message.sessionID, send])
 
-  if (parts.length === 0 && !diffFooter && !showFooter) return null
+  if (visibleParts.length === 0 && !diffFooter && !showFooter) return null
 
   return (
     <View style={styles.container}>
       <View style={styles.content}>
-        {parts.map((part) => (
+        {visibleParts.map((part) => (
           <PartRenderer
             key={part.id}
             part={part}
             isUser={false}
+            isActive={part.id === activePartID}
             isStreamingComplete={!!message.time.completed}
             onHydrateMessage={onHydrateMessage}
           />
@@ -99,6 +112,38 @@ export const AssistantMessage = memo(function AssistantMessage({ message, showFo
 function formatTokens(n: number): string {
   if (n < 1000) return `${n}`
   return `${(n / 1000).toFixed(1)}k`
+}
+
+function buildCopyCacheKey(parts: Part[]) {
+  return parts
+    .map((part) => {
+      if (part.type === "text" || part.type === "reasoning") return `${part.id}:${part.type}:${part.text.length}`
+      if (part.type === "tool") {
+        const output = "output" in part.state && typeof part.state.output === "string" ? part.state.output.length : 0
+        const error = "error" in part.state && typeof part.state.error === "string" ? part.state.error.length : 0
+        return `${part.id}:${part.type}:${part.state.status}:${output}:${error}`
+      }
+      return `${part.id}:${part.type}`
+    })
+    .join("|")
+}
+
+function resolveActivePartID(parts: Part[], isStreamingComplete: boolean) {
+  if (isStreamingComplete) return ""
+
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i]
+    if (part?.type === "tool" && (part.state.status === "running" || part.state.status === "pending")) {
+      return part.id
+    }
+  }
+
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i]
+    if (part?.type === "reasoning" && !part.time.end) return part.id
+  }
+
+  return ""
 }
 
 function findRetryPrompt(

@@ -29,6 +29,10 @@ type MessageEvent =
 type MessageState = {
   messages: Record<string, Message[]>
   parts: Record<string, Part[]>
+  messageIndexBySession: Record<string, Record<string, number>>
+  partIndexByMessage: Record<string, Record<string, number>>
+  partsVersionBySession: Record<string, number>
+  lastMessageIDBySession: Record<string, string>
   sending: Record<string, boolean>
   loading: Record<string, boolean>
   prefetching: Record<string, boolean>
@@ -39,7 +43,10 @@ type MessageState = {
   hydrated: Record<string, boolean>
   sessionOrder: string[]
   reset: () => void
-  load: (sessionID: string, opts?: { force?: boolean; limit?: number; compact?: boolean }) => Promise<void>
+  load: (
+    sessionID: string,
+    opts?: { force?: boolean; limit?: number; compact?: boolean; trimToRecent?: number },
+  ) => Promise<void>
   loadMore: (sessionID: string) => Promise<void>
   prefetch: (sessionIDs: string[], opts?: { limit?: number }) => Promise<void>
   hydrateMessage: (sessionID: string, messageID: string) => Promise<void>
@@ -65,9 +72,10 @@ type CachedSession = {
 const MESSAGE_CACHE_TTL_MS = 5 * 60_000
 const PERSISTED_CACHE_TTL_MS = 24 * 60 * 60_000
 const INITIAL_MESSAGE_LIMIT = 60
-const LOAD_MORE_STEP = 40
+const LOAD_MORE_STEP = 80
 const PREFETCH_LIMIT = 12
 const MAX_MESSAGE_LIMIT = 5_000
+const FAST_TRIM_SKIP_CLEANUP_THRESHOLD = 320
 const MAX_ACTIVE_SESSIONS = 8
 const MAX_PERSISTED_SESSIONS = 12
 const MAX_PERSISTED_MESSAGES_PER_SESSION = 140
@@ -94,6 +102,40 @@ export class SendMessageError extends Error {
 
 function sortMessages(a: Message, b: Message) {
   return a.id.localeCompare(b.id)
+}
+
+function buildMessageIndex(messages: Message[]) {
+  const index: Record<string, number> = {}
+  for (let i = 0; i < messages.length; i += 1) {
+    index[messages[i].id] = i
+  }
+  return index
+}
+
+function buildPartIndex(parts: Part[]) {
+  const index: Record<string, number> = {}
+  for (let i = 0; i < parts.length; i += 1) {
+    index[parts[i].id] = i
+  }
+  return index
+}
+
+function findMessageInsertIndex(messages: Message[], messageID: string) {
+  let low = 0
+  let high = messages.length
+  while (low < high) {
+    const mid = (low + high) >> 1
+    if (messages[mid].id.localeCompare(messageID) < 0) {
+      low = mid + 1
+    } else {
+      high = mid
+    }
+  }
+  return low
+}
+
+function incrementVersion(map: Record<string, number>, sessionID: string) {
+  map[sessionID] = (map[sessionID] ?? 0) + 1
 }
 
 function touchSessionOrder(order: string[], sessionID: string) {
@@ -175,6 +217,10 @@ function trimStateForLRU(state: MessageState, pinSessionID?: string): Partial<Me
   const evictSet = new Set(evict)
   const messages = { ...state.messages }
   const parts = { ...state.parts }
+  const messageIndexBySession = { ...state.messageIndexBySession }
+  const partIndexByMessage = { ...state.partIndexByMessage }
+  const partsVersionBySession = { ...state.partsVersionBySession }
+  const lastMessageIDBySession = { ...state.lastMessageIDBySession }
   const sending = { ...state.sending }
   const loading = { ...state.loading }
   const prefetching = { ...state.prefetching }
@@ -188,10 +234,14 @@ function trimStateForLRU(state: MessageState, pinSessionID?: string): Partial<Me
     const sessionMessages = messages[sessionID] ?? []
     for (const message of sessionMessages) {
       delete parts[message.id]
+      delete partIndexByMessage[message.id]
       delete hydrated[message.id]
       delete hydrating[message.id]
     }
     delete messages[sessionID]
+    delete messageIndexBySession[sessionID]
+    delete partsVersionBySession[sessionID]
+    delete lastMessageIDBySession[sessionID]
     delete sending[sessionID]
     delete loading[sessionID]
     delete prefetching[sessionID]
@@ -203,6 +253,10 @@ function trimStateForLRU(state: MessageState, pinSessionID?: string): Partial<Me
   return {
     messages,
     parts,
+    messageIndexBySession,
+    partIndexByMessage,
+    partsVersionBySession,
+    lastMessageIDBySession,
     sending,
     loading,
     prefetching,
@@ -216,14 +270,44 @@ function trimStateForLRU(state: MessageState, pinSessionID?: string): Partial<Me
 }
 
 function mergeMessages(existing: Message[], incoming: Message[]) {
-  const byID = new Map<string, Message>()
-  for (const message of incoming) {
-    byID.set(message.id, message)
+  if (incoming.length === 0) return existing
+  if (existing.length === 0) return [...incoming].sort(sortMessages)
+
+  const incomingSorted = [...incoming].sort(sortMessages)
+  const merged: Message[] = []
+  let i = 0
+  let j = 0
+
+  while (i < existing.length && j < incomingSorted.length) {
+    const left = existing[i]
+    const right = incomingSorted[j]
+    const cmp = left.id.localeCompare(right.id)
+    if (cmp < 0) {
+      merged.push(left)
+      i += 1
+      continue
+    }
+    if (cmp > 0) {
+      merged.push(right)
+      j += 1
+      continue
+    }
+    // Same id: prefer incoming copy from server.
+    merged.push(right)
+    i += 1
+    j += 1
   }
-  for (const message of existing) {
-    byID.set(message.id, message)
+
+  while (i < existing.length) {
+    merged.push(existing[i])
+    i += 1
   }
-  return Array.from(byID.values()).sort(sortMessages)
+  while (j < incomingSorted.length) {
+    merged.push(incomingSorted[j])
+    j += 1
+  }
+
+  return merged
 }
 
 function deltaBufferKey(messageID: string, partID: string, field: string) {
@@ -300,24 +384,38 @@ export const useMessages = createStore<MessageState>((set, get) => {
       const nextIDs = new Set(messages.map((message) => message.id))
       const previousMessages = state.messages[sessionID] ?? []
       const parts = { ...state.parts }
+      const partIndexByMessage = { ...state.partIndexByMessage }
       const hydrated = { ...state.hydrated }
+      const messageIndexBySession = { ...state.messageIndexBySession }
+      const partsVersionBySession = { ...state.partsVersionBySession }
+      const lastMessageIDBySession = { ...state.lastMessageIDBySession }
 
       for (const message of previousMessages) {
         if (nextIDs.has(message.id)) continue
         delete parts[message.id]
+        delete partIndexByMessage[message.id]
         delete hydrated[message.id]
       }
 
       for (const entry of entries) {
         parts[entry.info.id] = entry.parts
+        partIndexByMessage[entry.info.id] = buildPartIndex(entry.parts)
         hydrated[entry.info.id] = isHydratedParts(entry.parts)
       }
+
+      messageIndexBySession[sessionID] = buildMessageIndex(messages)
+      lastMessageIDBySession[sessionID] = messages[messages.length - 1]?.id ?? ""
+      incrementVersion(partsVersionBySession, sessionID)
 
       const sessionOrder = touchSessionOrder(state.sessionOrder, sessionID)
       const next: MessageState = {
         ...state,
         messages: { ...state.messages, [sessionID]: messages },
         parts,
+        messageIndexBySession,
+        partIndexByMessage,
+        partsVersionBySession,
+        lastMessageIDBySession,
         hydrated,
         loadedAt: { ...state.loadedAt, [sessionID]: loadedAt },
         exhausted: { ...state.exhausted, [sessionID]: entries.length < limit },
@@ -338,6 +436,10 @@ export const useMessages = createStore<MessageState>((set, get) => {
   return {
     messages: {},
     parts: {},
+    messageIndexBySession: {},
+    partIndexByMessage: {},
+    partsVersionBySession: {},
+    lastMessageIDBySession: {},
     sending: {},
     loading: {},
     prefetching: {},
@@ -357,6 +459,10 @@ export const useMessages = createStore<MessageState>((set, get) => {
       set({
         messages: {},
         parts: {},
+        messageIndexBySession: {},
+        partIndexByMessage: {},
+        partsVersionBySession: {},
+        lastMessageIDBySession: {},
         sending: {},
         loading: {},
         prefetching: {},
@@ -380,9 +486,91 @@ export const useMessages = createStore<MessageState>((set, get) => {
       if (state.loading[sessionID]) return
 
       const limit = Math.max(1, Math.min(opts?.limit ?? INITIAL_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT))
+      const trimToRecent = Math.max(0, Math.min(opts?.trimToRecent ?? 0, MAX_MESSAGE_LIMIT))
       const now = Date.now()
       const hasMessages = (state.messages[sessionID]?.length ?? 0) > 0
       const loadedAt = state.loadedAt[sessionID]
+
+      if (!opts?.force && trimToRecent > 0 && hasMessages && (state.messages[sessionID]?.length ?? 0) > trimToRecent) {
+        set((prev) => {
+          const existing = prev.messages[sessionID] ?? []
+          if (existing.length <= trimToRecent) {
+            return {
+              sessionOrder: touchSessionOrder(prev.sessionOrder, sessionID),
+            }
+          }
+
+          const nextMessages = existing.slice(-trimToRecent)
+          const trimCount = existing.length - nextMessages.length
+          const fastTrim = trimCount >= FAST_TRIM_SKIP_CLEANUP_THRESHOLD
+
+          if (fastTrim) {
+            return {
+              messages: { ...prev.messages, [sessionID]: nextMessages },
+              messageIndexBySession: {
+                ...prev.messageIndexBySession,
+                [sessionID]: buildMessageIndex(nextMessages),
+              },
+              lastMessageIDBySession: {
+                ...prev.lastMessageIDBySession,
+                [sessionID]: nextMessages[nextMessages.length - 1]?.id ?? "",
+              },
+              oldestCursor: {
+                ...prev.oldestCursor,
+                [sessionID]: nextMessages[0]?.id ?? null,
+              },
+              loadedAt: {
+                ...prev.loadedAt,
+                [sessionID]: Date.now(),
+              },
+              sessionOrder: touchSessionOrder(prev.sessionOrder, sessionID),
+            }
+          }
+
+          const keepMessageIDs = new Set(nextMessages.map((message) => message.id))
+          const nextParts = { ...prev.parts }
+          const nextPartIndexByMessage = { ...prev.partIndexByMessage }
+          const nextHydrated = { ...prev.hydrated }
+          const nextHydrating = { ...prev.hydrating }
+
+          for (const message of existing) {
+            if (keepMessageIDs.has(message.id)) continue
+            delete nextParts[message.id]
+            delete nextPartIndexByMessage[message.id]
+            delete nextHydrated[message.id]
+            delete nextHydrating[message.id]
+          }
+
+          const partsVersionBySession = { ...prev.partsVersionBySession }
+          incrementVersion(partsVersionBySession, sessionID)
+
+          return {
+            messages: { ...prev.messages, [sessionID]: nextMessages },
+            parts: nextParts,
+            messageIndexBySession: {
+              ...prev.messageIndexBySession,
+              [sessionID]: buildMessageIndex(nextMessages),
+            },
+            partIndexByMessage: nextPartIndexByMessage,
+            partsVersionBySession,
+            lastMessageIDBySession: {
+              ...prev.lastMessageIDBySession,
+              [sessionID]: nextMessages[nextMessages.length - 1]?.id ?? "",
+            },
+            hydrated: nextHydrated,
+            hydrating: nextHydrating,
+            oldestCursor: {
+              ...prev.oldestCursor,
+              [sessionID]: nextMessages[0]?.id ?? null,
+            },
+            loadedAt: {
+              ...prev.loadedAt,
+              [sessionID]: Date.now(),
+            },
+            sessionOrder: touchSessionOrder(prev.sessionOrder, sessionID),
+          }
+        })
+      }
 
       if (!opts?.force && hasMessages && loadedAt && now - loadedAt < MESSAGE_CACHE_TTL_MS) {
         addCrashBreadcrumb("messages-load:skip-memory-ttl", {
@@ -521,12 +709,16 @@ export const useMessages = createStore<MessageState>((set, get) => {
             const mergedMessages = mergeMessages(existingMessages, incomingMessages)
 
             const parts = { ...prev.parts }
+            const partIndexByMessage = { ...prev.partIndexByMessage }
             const hydrated = { ...prev.hydrated }
+            const partsVersionBySession = { ...prev.partsVersionBySession }
             for (const entry of entries) {
               const messageID = entry.info.id
               if (prev.hydrated[messageID] && prev.parts[messageID]) continue
               parts[messageID] = entry.parts
+              partIndexByMessage[messageID] = buildPartIndex(entry.parts)
               hydrated[messageID] = isHydratedParts(entry.parts)
+              incrementVersion(partsVersionBySession, sessionID)
             }
 
             const sessionOrder = touchSessionOrder(prev.sessionOrder, sessionID)
@@ -534,6 +726,16 @@ export const useMessages = createStore<MessageState>((set, get) => {
               ...prev,
               messages: { ...prev.messages, [sessionID]: mergedMessages },
               parts,
+              messageIndexBySession: {
+                ...prev.messageIndexBySession,
+                [sessionID]: buildMessageIndex(mergedMessages),
+              },
+              partIndexByMessage,
+              partsVersionBySession,
+              lastMessageIDBySession: {
+                ...prev.lastMessageIDBySession,
+                [sessionID]: mergedMessages[mergedMessages.length - 1]?.id ?? "",
+              },
               hydrated,
               loadedAt: { ...prev.loadedAt, [sessionID]: Date.now() },
               exhausted: {
@@ -617,20 +819,36 @@ export const useMessages = createStore<MessageState>((set, get) => {
           const entry = result.data as MessageWithParts
           set((prev) => {
             const existing = prev.messages[sessionID] ?? []
-            const idx = existing.findIndex((message) => message.id === messageID)
+            const existingIndex = prev.messageIndexBySession[sessionID] ?? buildMessageIndex(existing)
+            const idx = existingIndex[messageID] ?? -1
             const nextMessages = [...existing]
             if (idx >= 0) {
               nextMessages[idx] = entry.info
             } else {
-              nextMessages.push(entry.info)
-              nextMessages.sort(sortMessages)
+              nextMessages.splice(findMessageInsertIndex(nextMessages, entry.info.id), 0, entry.info)
             }
 
+            const partIndexByMessage = {
+              ...prev.partIndexByMessage,
+              [messageID]: buildPartIndex(entry.parts),
+            }
+            const partsVersionBySession = { ...prev.partsVersionBySession }
+            incrementVersion(partsVersionBySession, sessionID)
             const sessionOrder = touchSessionOrder(prev.sessionOrder, sessionID)
             const next: MessageState = {
               ...prev,
               messages: { ...prev.messages, [sessionID]: nextMessages },
               parts: { ...prev.parts, [messageID]: entry.parts },
+              messageIndexBySession: {
+                ...prev.messageIndexBySession,
+                [sessionID]: buildMessageIndex(nextMessages),
+              },
+              partIndexByMessage,
+              partsVersionBySession,
+              lastMessageIDBySession: {
+                ...prev.lastMessageIDBySession,
+                [sessionID]: nextMessages[nextMessages.length - 1]?.id ?? "",
+              },
               hydrated: { ...prev.hydrated, [messageID]: true },
               loadedAt: { ...prev.loadedAt, [sessionID]: Date.now() },
               oldestCursor: {
@@ -677,6 +895,8 @@ export const useMessages = createStore<MessageState>((set, get) => {
 
       set((state) => {
         const nextMessages = [...(state.messages[sessionID] ?? []), optimisticUser]
+        const partsVersionBySession = { ...state.partsVersionBySession }
+        incrementVersion(partsVersionBySession, sessionID)
         const sessionOrder = touchSessionOrder(state.sessionOrder, sessionID)
         const next: MessageState = {
           ...state,
@@ -687,6 +907,19 @@ export const useMessages = createStore<MessageState>((set, get) => {
           parts: {
             ...state.parts,
             [id]: [optimisticPart],
+          },
+          messageIndexBySession: {
+            ...state.messageIndexBySession,
+            [sessionID]: buildMessageIndex(nextMessages),
+          },
+          partIndexByMessage: {
+            ...state.partIndexByMessage,
+            [id]: buildPartIndex([optimisticPart]),
+          },
+          partsVersionBySession,
+          lastMessageIDBySession: {
+            ...state.lastMessageIDBySession,
+            [sessionID]: nextMessages[nextMessages.length - 1]?.id ?? "",
           },
           hydrated: {
             ...state.hydrated,
@@ -719,12 +952,26 @@ export const useMessages = createStore<MessageState>((set, get) => {
         set((state) => {
           const nextMessages = (state.messages[sessionID] ?? []).filter((m) => m.id !== id)
           const nextParts = { ...state.parts }
+          const nextPartIndex = { ...state.partIndexByMessage }
           const nextHydrated = { ...state.hydrated }
+          const partsVersionBySession = { ...state.partsVersionBySession }
           delete nextParts[id]
+          delete nextPartIndex[id]
           delete nextHydrated[id]
+          incrementVersion(partsVersionBySession, sessionID)
           return {
             messages: { ...state.messages, [sessionID]: nextMessages },
             parts: nextParts,
+            messageIndexBySession: {
+              ...state.messageIndexBySession,
+              [sessionID]: buildMessageIndex(nextMessages),
+            },
+            partIndexByMessage: nextPartIndex,
+            partsVersionBySession,
+            lastMessageIDBySession: {
+              ...state.lastMessageIDBySession,
+              [sessionID]: nextMessages[nextMessages.length - 1]?.id ?? "",
+            },
             hydrated: nextHydrated,
             oldestCursor: {
               ...state.oldestCursor,
@@ -775,6 +1022,10 @@ export const useMessages = createStore<MessageState>((set, get) => {
       set((state) => {
         const messages = { ...state.messages }
         const parts = { ...state.parts }
+        const messageIndexBySession = { ...state.messageIndexBySession }
+        const partIndexByMessage = { ...state.partIndexByMessage }
+        const partsVersionBySession = { ...state.partsVersionBySession }
+        const lastMessageIDBySession = { ...state.lastMessageIDBySession }
         const hydrated = { ...state.hydrated }
         const oldestCursor = { ...state.oldestCursor }
         const loadedAt = { ...state.loadedAt }
@@ -790,18 +1041,24 @@ export const useMessages = createStore<MessageState>((set, get) => {
               touchedForPersist.add(sessionID)
 
               const existing = messages[sessionID] ?? []
-              const idx = existing.findIndex((message) => message.id === info.id)
+              const sessionIndex = messageIndexBySession[sessionID] ?? buildMessageIndex(existing)
+              const idx = sessionIndex[info.id] ?? -1
               if (idx >= 0) {
                 const next = [...existing]
                 next[idx] = info
-                messages[sessionID] = next.sort(sortMessages)
+                messages[sessionID] = next
+                messageIndexBySession[sessionID] = sessionIndex
               } else {
                 const filtered = existing.filter(
                   (message) => !message.id.startsWith("optimistic-") || message.role !== info.role,
                 )
-                messages[sessionID] = [...filtered, info].sort(sortMessages)
+                const insertAt = findMessageInsertIndex(filtered, info.id)
+                const next = [...filtered.slice(0, insertAt), info, ...filtered.slice(insertAt)]
+                messages[sessionID] = next
+                messageIndexBySession[sessionID] = buildMessageIndex(next)
               }
               oldestCursor[sessionID] = messages[sessionID][0]?.id ?? null
+              lastMessageIDBySession[sessionID] = messages[sessionID][messages[sessionID].length - 1]?.id ?? ""
               loadedAt[sessionID] = Date.now()
               changed = true
               break
@@ -814,9 +1071,16 @@ export const useMessages = createStore<MessageState>((set, get) => {
               touchedForPersist.add(sessionID)
 
               const existing = messages[sessionID] ?? []
-              const next = existing.filter((message) => message.id !== messageID)
+              const sessionIndex = messageIndexBySession[sessionID] ?? buildMessageIndex(existing)
+              const idx = sessionIndex[messageID] ?? -1
+              const next =
+                idx >= 0
+                  ? [...existing.slice(0, idx), ...existing.slice(idx + 1)]
+                  : existing.filter((message) => message.id !== messageID)
               messages[sessionID] = next
+              messageIndexBySession[sessionID] = buildMessageIndex(next)
               delete parts[messageID]
+              delete partIndexByMessage[messageID]
               delete hydrated[messageID]
               const removedPrefix = `${messageID}:`
               for (const key of pendingDeltas.keys()) {
@@ -825,6 +1089,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
                 }
               }
               oldestCursor[sessionID] = next[0]?.id ?? null
+              lastMessageIDBySession[sessionID] = next[next.length - 1]?.id ?? ""
               loadedAt[sessionID] = Date.now()
               changed = true
               break
@@ -849,17 +1114,21 @@ export const useMessages = createStore<MessageState>((set, get) => {
               }
 
               const existing = parts[part.messageID] ?? []
-              const idx = existing.findIndex((candidate) => candidate.id === nextPart.id)
+              const partIndex = partIndexByMessage[part.messageID] ?? buildPartIndex(existing)
+              const idx = partIndex[nextPart.id] ?? -1
               if (idx >= 0) {
                 const next = [...existing]
                 next[idx] = nextPart
                 parts[nextPart.messageID] = next
+                partIndexByMessage[nextPart.messageID] = partIndex
                 hydrated[nextPart.messageID] = isHydratedParts(next)
               } else {
                 const next = [...existing, nextPart]
                 parts[nextPart.messageID] = next
+                partIndexByMessage[nextPart.messageID] = buildPartIndex(next)
                 hydrated[nextPart.messageID] = isHydratedParts(next)
               }
+              incrementVersion(partsVersionBySession, sessionID)
               loadedAt[sessionID] = Date.now()
               changed = true
               break
@@ -870,7 +1139,8 @@ export const useMessages = createStore<MessageState>((set, get) => {
               if (!delta) break
 
               const existing = parts[messageID] ?? []
-              const idx = existing.findIndex((part) => part.id === partID)
+              const partIndex = partIndexByMessage[messageID] ?? buildPartIndex(existing)
+              const idx = partIndex[partID] ?? -1
 
               if (idx < 0) {
                 const key = deltaBufferKey(messageID, partID, field)
@@ -895,7 +1165,9 @@ export const useMessages = createStore<MessageState>((set, get) => {
               const next = [...existing]
               next[idx] = nextPart
               parts[messageID] = next
+              partIndexByMessage[messageID] = partIndex
               hydrated[messageID] = isHydratedParts(next)
+              incrementVersion(partsVersionBySession, sessionID)
               loadedAt[sessionID] = Date.now()
               if (field === "text" && (nextPart.type === "text" || nextPart.type === "reasoning")) {
                 markChatFirstToken(sessionID)
@@ -912,8 +1184,12 @@ export const useMessages = createStore<MessageState>((set, get) => {
               touchedForPersist.add(sessionID)
 
               const existing = parts[messageID] ?? []
-              const next = existing.filter((part) => part.id !== partID)
+              const partIndex = partIndexByMessage[messageID] ?? buildPartIndex(existing)
+              const idx = partIndex[partID] ?? -1
+              const next =
+                idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing.filter((part) => part.id !== partID)
               parts[messageID] = next
+              partIndexByMessage[messageID] = buildPartIndex(next)
               hydrated[messageID] = isHydratedParts(next)
               const removedPrefix = `${messageID}:${partID}:`
               for (const key of pendingDeltas.keys()) {
@@ -921,6 +1197,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
                   pendingDeltas.delete(key)
                 }
               }
+              incrementVersion(partsVersionBySession, sessionID)
               loadedAt[sessionID] = Date.now()
               changed = true
               break
@@ -939,6 +1216,10 @@ export const useMessages = createStore<MessageState>((set, get) => {
           ...state,
           messages,
           parts,
+          messageIndexBySession,
+          partIndexByMessage,
+          partsVersionBySession,
+          lastMessageIDBySession,
           hydrated,
           oldestCursor,
           loadedAt,
@@ -990,8 +1271,10 @@ export const useMessages = createStore<MessageState>((set, get) => {
       if (!sessionID) {
         set((state) => {
           const next = (state.parts[messageID] ?? []).filter((part) => part.id !== partID)
+          const partIndexByMessage = { ...state.partIndexByMessage, [messageID]: buildPartIndex(next) }
           return {
             parts: { ...state.parts, [messageID]: next },
+            partIndexByMessage,
             hydrated: { ...state.hydrated, [messageID]: isHydratedParts(next) },
           }
         })

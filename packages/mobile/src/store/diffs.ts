@@ -1,6 +1,10 @@
 import { create as createStore } from "zustand"
+import { createOpencodeClient } from "@opencode-ai/sdk/client"
 import { client } from "../api/client"
+import { headers, url } from "../api/client"
 import type { DiffSummary, SessionFileDiff } from "../features/diff/types"
+import { normalizeDiffList } from "../features/diff/normalize"
+import { useSessions } from "./sessions"
 
 const DIFF_CACHE_TTL_MS = 30_000
 
@@ -14,25 +18,39 @@ function numberOrZero(input: unknown): number {
   return Number.isFinite(input) ? Number(input) : 0
 }
 
-function stringOrEmpty(input: unknown): string {
-  return typeof input === "string" ? input : ""
-}
-
-function normalizeDiff(input: unknown): SessionFileDiff {
-  const diff = (input && typeof input === "object" ? input : {}) as Partial<SessionFileDiff>
-  return {
-    file: stringOrEmpty(diff.file),
-    before: stringOrEmpty(diff.before),
-    after: stringOrEmpty(diff.after),
-    additions: Math.max(0, numberOrZero(diff.additions)),
-    deletions: Math.max(0, numberOrZero(diff.deletions)),
-    status: typeof diff.status === "string" ? diff.status : undefined,
+async function fetchDiffFromWorktree(sessionID: string, worktree: string | undefined) {
+  if (!worktree) {
+    const result = await client().session.diff({
+      path: { id: sessionID },
+    })
+    return normalizeDiffList(result.data as SessionFileDiff[] | undefined)
   }
+  const nextHeaders: Record<string, string> = {
+    ...headers(),
+    "x-opencode-directory": worktree,
+  }
+  const scopedClient = createOpencodeClient({
+    baseUrl: url(),
+    headers: nextHeaders,
+  })
+  const result = await scopedClient.session.diff({
+    path: { id: sessionID },
+  })
+  return normalizeDiffList(result.data as SessionFileDiff[] | undefined)
 }
 
-function normalizeDiffList(diff: unknown): SessionFileDiff[] {
-  if (!Array.isArray(diff)) return []
-  return diff.map(normalizeDiff)
+async function fetchDiffForSession(sessionID: string) {
+  const sessionWorktree = useSessions.getState().sessionByID[sessionID]?.directory
+  if (sessionWorktree) {
+    try {
+      return await fetchDiffFromWorktree(sessionID, sessionWorktree)
+    } catch {
+      // fallback below
+    }
+  }
+
+  const currentWorktree = headers()["x-opencode-directory"]
+  return await fetchDiffFromWorktree(sessionID, currentWorktree || undefined)
 }
 
 function toErrorMessage(error: unknown): string {
@@ -100,10 +118,7 @@ export const useDiffs = createStore<DiffState>((set, get) => ({
     }))
 
     try {
-      const result = await client().session.diff({
-        path: { id: sessionID },
-      })
-      const normalized = normalizeDiffList(result.data as SessionFileDiff[] | undefined)
+      const normalized = await fetchDiffForSession(sessionID)
       set((prev) => ({
         bySession: {
           ...prev.bySession,
@@ -137,10 +152,11 @@ export const useDiffs = createStore<DiffState>((set, get) => ({
   },
 
   setSessionDiff: (sessionID, diff) => {
+    const normalized = normalizeDiffList(diff)
     set((prev) => ({
       bySession: {
         ...prev.bySession,
-        [sessionID]: normalizeDiffList(diff),
+        [sessionID]: normalized,
       },
       loading: {
         ...prev.loading,

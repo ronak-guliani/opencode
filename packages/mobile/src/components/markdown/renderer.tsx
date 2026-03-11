@@ -1,8 +1,9 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from "react"
-import { Linking, StyleSheet, Text, type TextStyle, type ViewStyle, View } from "react-native"
+import { Linking, Platform, StyleSheet, Text, type TextStyle, type ViewStyle, View } from "react-native"
 import MarkdownBase from "react-native-markdown-display"
 import { StreamdownRN } from "streamdown-rn"
 import { useTheme, type Theme } from "../../theme"
+import { FEATURE_FLAGS } from "../../config/feature-flags"
 import { CodeBlock } from "./code-block"
 
 type Props = {
@@ -13,10 +14,13 @@ type Props = {
 
 const TYPED_STREAM_MAX_CHARS = 48_000
 const TYPED_STREAM_TICK_MS = 12
-const TYPED_STREAM_BASE_CPS = 92
-const TYPED_STREAM_MAX_CPS = 560
-const TYPED_STREAM_SAFE_MAX_CHARS = 1_600
-const COMPLEX_MARKDOWN_PATTERN = /```|`|^\s{0,3}(?:[-*+]\s|\d+\.\s|>\s|#{1,6}\s)|^\s*\|.*\|/m
+const TYPED_STREAM_BASE_CPS = 96
+const TYPED_STREAM_MAX_CPS = 640
+const TYPED_STREAM_SAFE_MAX_CHARS = 4_800
+const TYPED_STREAM_SAFE_MAX_CHARS_IOS = 2_400
+const TYPED_STREAM_LAG_BAILOUT_IOS = 760
+const TYPED_STREAM_READABLE_LOOKAHEAD = 18
+const UNSAFE_TYPED_STREAM_PATTERN = /```|^\s*\|.*\|/m
 
 const Streamdown = StreamdownRN as React.ComponentType<{
   children: string
@@ -65,9 +69,29 @@ function clamp(value: number, min: number, max: number) {
 function allowTypedStreaming(input: string, variant: "default" | "reasoning", isComplete: boolean) {
   if (variant !== "default") return false
   if (isComplete) return false
-  if (input.length > TYPED_STREAM_SAFE_MAX_CHARS) return false
-  if (COMPLEX_MARKDOWN_PATTERN.test(input)) return false
+  const maxChars =
+    Platform.OS === "ios" && FEATURE_FLAGS.iosAggressiveTypedStreamingGate
+      ? TYPED_STREAM_SAFE_MAX_CHARS_IOS
+      : TYPED_STREAM_SAFE_MAX_CHARS
+  if (input.length > maxChars) return false
+  if (UNSAFE_TYPED_STREAM_PATTERN.test(input)) return false
   return true
+}
+
+function findReadableRevealBoundary(target: string, currentLength: number, nextLength: number) {
+  if (nextLength >= target.length) return target.length
+  if (nextLength <= currentLength) return currentLength
+
+  const lookaheadLimit = Math.min(target.length, nextLength + TYPED_STREAM_READABLE_LOOKAHEAD)
+  for (let cursor = nextLength; cursor < lookaheadLimit; cursor += 1) {
+    const char = target[cursor]
+    const prev = target[cursor - 1]
+    if (char === "\n") return cursor
+    if (/\s/.test(char)) return cursor
+    if (/[.,!?;:)]/.test(prev)) return cursor
+  }
+
+  return nextLength
 }
 
 function useTypedStreamingText(input: string, opts: { enabled: boolean; isComplete: boolean }) {
@@ -112,6 +136,10 @@ function useTypedStreamingText(input: string, opts: { enabled: boolean; isComple
     if (!target || target.length <= current.length) return
 
     const lag = target.length - current.length
+    if (Platform.OS === "ios" && FEATURE_FLAGS.iosAggressiveTypedStreamingGate && lag > TYPED_STREAM_LAG_BAILOUT_IOS) {
+      syncDisplayed(target)
+      return
+    }
     if (isCompleteRef.current || target.length > TYPED_STREAM_MAX_CHARS) {
       syncDisplayed(target)
       return
@@ -126,7 +154,8 @@ function useTypedStreamingText(input: string, opts: { enabled: boolean; isComple
 
     const cps = clamp(TYPED_STREAM_BASE_CPS * boost, TYPED_STREAM_BASE_CPS, TYPED_STREAM_MAX_CPS)
     const charsToReveal = clamp(Math.round((cps * dt) / 1000), 1, 96)
-    const nextLen = Math.min(target.length, current.length + charsToReveal)
+    const rawNextLen = Math.min(target.length, current.length + charsToReveal)
+    const nextLen = findReadableRevealBoundary(target, current.length, rawNextLen)
 
     syncDisplayed(target.slice(0, nextLen))
     if (nextLen < target.length) {

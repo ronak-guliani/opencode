@@ -1,26 +1,37 @@
-import { useEffect, useRef, useMemo, useCallback } from "react"
-import { AppState, type AppStateStatus, InteractionManager, View, StyleSheet, Pressable, Text, Alert } from "react-native"
+import { useEffect, useRef, useState, useCallback, useMemo } from "react"
+import {
+  AppState,
+  type AppStateStatus,
+  InteractionManager,
+  View,
+  StyleSheet,
+  Pressable,
+  Text,
+  Alert,
+} from "react-native"
 import { useLocalSearchParams, useRouter } from "expo-router"
 import Feather from "@expo/vector-icons/Feather"
-import { LinearGradient } from "expo-linear-gradient"
+import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons"
 import * as Haptics from "expo-haptics"
 import * as Clipboard from "expo-clipboard"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useMessages as useMessageStore } from "../../../../src/store/messages"
 import { useSessions } from "../../../../src/store/sessions"
+import { useSettings, modelName } from "../../../../src/store/settings"
 import { useRequests } from "../../../../src/store/requests"
 import { useConnection } from "../../../../src/store/connection"
-import { useSidebar } from "../../../../src/store/sidebar"
-import { useSessionMessages } from "../../../../src/api/hooks"
+import { usePendingRequestCount, useSessionMessages, useSessionPartsMap } from "../../../../src/api/hooks"
 import { useTheme } from "../../../../src/theme"
 import { ChatProvider } from "../../../../src/components/chat/provider"
 import { MessagesList } from "../../../../src/components/chat/list"
 import { Composer } from "../../../../src/components/chat/composer"
 import { RequestBanner } from "../../../../src/components/chat/request-banner"
 import { MessageSkeleton } from "../../../../src/components/skeleton"
+import { ModelPicker } from "../../../../src/components/model-picker"
 import { DisableFadeProvider } from "../../../../src/animation"
 import { markChatFirstPaint, markChatInteractionReady, markChatOpenStart } from "../../../../src/perf/chat-metrics"
 import { addCrashBreadcrumb, readCrashBreadcrumbs } from "../../../../src/perf/crash-breadcrumbs"
+import { resolveLatestTodoSnapshot } from "../../../../src/components/chat/part"
 
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
 const REQUEST_POLL_BUSY_MS = 4_000
@@ -28,11 +39,17 @@ const REQUEST_POLL_PENDING_MS = 8_000
 const REQUEST_POLL_IDLE_MS = 45_000
 const MESSAGE_RESYNC_BUSY_MS = 3_000
 const MESSAGE_RESYNC_IDLE_MS = 12_000
+const LOADING_SKELETON_DELAY_MS = 140
 const SESSION_OPEN_LIMIT = 24
 const SESSION_PREFETCH_DELAY_MS = 550
 const SESSION_PREFETCH_NEIGHBORS = 2
 const SESSION_PREFETCH_LIMIT = 10
-const TITLE_FADE_WIDTH = 22
+const MaterialIcon = MaterialCommunityIcons as unknown as React.ComponentType<{
+  name: string
+  size: number
+  color: string
+  style?: unknown
+}>
 
 export default function SessionScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
@@ -42,35 +59,69 @@ export default function SessionScreen() {
   const load = useMessageStore((s) => s.load)
   const prefetch = useMessageStore((s) => s.prefetch)
   const loadingMessages = useMessageStore((s) => (id ? (s.loading[id] ?? false) : false))
-  const create = useSessions((s) => s.create)
+  const loadedAt = useMessageStore((s) => (id ? (s.loadedAt[id] ?? 0) : 0))
   const session = useSessions((s) => (id ? s.sessions.find((item) => item.id === id) : undefined))
   const select = useSessions((s) => s.select)
   const refreshRequests = useRequests((s) => s.refresh)
-  const pendingRequestCount = useRequests((s) => {
-    if (!id) return 0
-    let total = 0
-    for (const permission of s.permissions) {
-      if (permission.sessionID === id) total += 1
-    }
-    for (const question of s.questions) {
-      if (question.sessionID === id) total += 1
-    }
-    return total
-  })
+  const pendingRequestCount = usePendingRequestCount(id)
   const directory = useConnection((s) => s.directory)
   const stream = useConnection((s) => s.stream)
   const switchDirectory = useConnection((s) => s.switchDirectory)
-  const requestOpen = useSidebar((s) => s.requestOpen)
+  const activeModel = useSettings(modelName)
+  const fetchProviders = useSettings((s) => s.fetchProviders)
   const messages = useSessionMessages(id)
+  const partsByMessage = useSessionPartsMap(id)
   const sessionStatus = useSessions((s) => (id ? s.statuses[id] : undefined))
   const title = (session?.title || "").trim() || "Untitled session"
-  const titleFadeStart = useMemo(() => withAlpha(theme.colors.background, "00"), [theme.colors.background])
+  const titleLimit = Math.max(14, Math.min(34, 36 - Math.floor(activeModel.trim().length * 0.75)))
+  const shortTitle = title.length > titleLimit ? `${title.slice(0, titleLimit).trimEnd()}…` : title
+  const [pickerVisible, setPickerVisible] = useState(false)
+  const [showLoadingSkeleton, setShowLoadingSkeleton] = useState(false)
   // Track which sessions have been viewed — disable fade for revisited chats
   const seen = useRef(new Set<string>())
   const wasSeen = id ? seen.current.has(id) : false
   const appStateRef = useRef<AppStateStatus>(AppState.currentState)
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isBusy = sessionStatus?.type === "busy"
+  const shouldShowLoadingState = messages.length === 0 && (loadingMessages || loadedAt === 0)
+  const pinnedTodo = useMemo(() => {
+    let end = -1
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const candidate = messages[i]
+      if (!candidate || candidate.role !== "assistant") continue
+      end = i
+      break
+    }
+
+    if (end < 0) return null
+
+    let start = end
+    while (start > 0 && messages[start - 1]?.role === "assistant") {
+      start -= 1
+    }
+
+    const tail = messages[end]
+    const live = !!(tail && "completed" in tail.time ? !tail.time.completed : true)
+    for (let i = end; i >= start; i -= 1) {
+      const candidate = messages[i]
+      if (!candidate || candidate.role !== "assistant") continue
+      const snapshot = resolveLatestTodoSnapshot(partsByMessage[candidate.id] ?? [])
+      if (snapshot) return { snapshot, live }
+    }
+
+    return null
+  }, [messages, partsByMessage])
+
+  useEffect(() => {
+    if (!shouldShowLoadingState) {
+      setShowLoadingSkeleton(false)
+      return
+    }
+    const timer = setTimeout(() => {
+      setShowLoadingSkeleton(true)
+    }, LOADING_SKELETON_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [shouldShowLoadingState])
 
   const clearPollTimer = useCallback(() => {
     if (pollTimerRef.current) {
@@ -79,24 +130,18 @@ export default function SessionScreen() {
     }
   }, [])
 
-  const openSidebar = useCallback(() => {
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-    requestOpen()
-  }, [requestOpen])
-
   const createSession = useCallback(async () => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
     try {
-      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
       if (session?.directory && session.directory !== directory) {
         await switchDirectory(session.directory)
       }
-      const next = await create()
-      select(next.id)
-      router.replace(`/(main)/session/${next.id}`)
+      select(null)
+      router.replace("/(main)/session")
     } catch {
-      Alert.alert("Unable to create session", "Please try again.")
+      Alert.alert("Unable to start session", "Please try again.")
     }
-  }, [session?.directory, directory, switchDirectory, create, select, router])
+  }, [session?.directory, directory, switchDirectory, select, router])
 
   const openOptions = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
@@ -122,6 +167,12 @@ export default function SessionScreen() {
     Alert.alert("Session options", "More actions are coming soon.", actions)
   }, [id])
 
+  const openModelPicker = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+    void fetchProviders()
+    setPickerVisible(true)
+  }, [fetchProviders])
+
   useEffect(() => {
     if (id) {
       addCrashBreadcrumb("session-screen:open", {
@@ -129,7 +180,7 @@ export default function SessionScreen() {
       })
       markChatOpenStart(id)
       select(id)
-      void load(id, { limit: SESSION_OPEN_LIMIT, compact: true })
+      void load(id, { limit: SESSION_OPEN_LIMIT, compact: true, trimToRecent: SESSION_OPEN_LIMIT })
       addCrashBreadcrumb("session-screen:load", { sessionID: id, limit: SESSION_OPEN_LIMIT })
       // Mark as seen after a short delay to let initial content animate
       const timer = setTimeout(() => seen.current.add(id), 1500)
@@ -145,6 +196,45 @@ export default function SessionScreen() {
       }
     }
   }, [id, load, refreshRequests, select])
+
+  useEffect(() => {
+    if (!id) return
+    if (!session?.directory || session.directory === directory) return
+    let cancelled = false
+
+    addCrashBreadcrumb("session-screen:directory-switch:start", {
+      sessionID: id,
+      fromDirectory: directory,
+      toDirectory: session.directory,
+    })
+
+    void switchDirectory(session.directory)
+      .then(() => {
+        if (cancelled) return
+        addCrashBreadcrumb("session-screen:directory-switch:done", {
+          sessionID: id,
+          toDirectory: session.directory,
+        })
+        // Refresh from the correct directory, but keep render bounded to latest messages.
+        void load(id, { limit: SESSION_OPEN_LIMIT, compact: true, trimToRecent: SESSION_OPEN_LIMIT })
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        addCrashBreadcrumb(
+          "session-screen:directory-switch:error",
+          {
+            sessionID: id,
+            toDirectory: session.directory,
+            message: error instanceof Error ? error.message : String(error),
+          },
+          "warn",
+        )
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [directory, id, load, session?.directory, switchDirectory])
 
   useEffect(() => {
     if (!id) return
@@ -178,15 +268,22 @@ export default function SessionScreen() {
     if (!id) return
 
     let cancelled = false
+    const shouldPoll = stream !== "connected"
 
-    const pollOnceAndSchedule = async () => {
+    const refreshOnce = async () => {
       if (cancelled || appStateRef.current !== "active") return
       try {
         await refreshRequests()
       } catch {
         // ignore
       }
+    }
+
+    const pollOnceAndSchedule = async () => {
       if (cancelled || appStateRef.current !== "active") return
+      await refreshOnce()
+      if (cancelled || appStateRef.current !== "active") return
+      if (!shouldPoll) return
 
       const interval = isBusy
         ? REQUEST_POLL_BUSY_MS
@@ -200,13 +297,21 @@ export default function SessionScreen() {
     }
 
     clearPollTimer()
-    void pollOnceAndSchedule()
+    if (shouldPoll) {
+      void pollOnceAndSchedule()
+    } else {
+      void refreshOnce()
+    }
 
     const appStateSubscription = AppState.addEventListener("change", (nextState) => {
       appStateRef.current = nextState
       if (nextState === "active") {
         clearPollTimer()
-        void pollOnceAndSchedule()
+        if (shouldPoll) {
+          void pollOnceAndSchedule()
+        } else {
+          void refreshOnce()
+        }
       } else {
         clearPollTimer()
       }
@@ -217,12 +322,7 @@ export default function SessionScreen() {
       appStateSubscription.remove()
       clearPollTimer()
     }
-  }, [id, clearPollTimer, isBusy, pendingRequestCount, refreshRequests])
-
-  useEffect(() => {
-    if (!id || stream !== "connected") return
-    void refreshRequests()
-  }, [id, stream, refreshRequests])
+  }, [id, clearPollTimer, isBusy, pendingRequestCount, refreshRequests, stream])
 
   useEffect(() => {
     if (!id) return
@@ -230,9 +330,15 @@ export default function SessionScreen() {
 
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
+    let unchangedSyncs = 0
+    const baseDelay = isBusy ? MESSAGE_RESYNC_BUSY_MS : MESSAGE_RESYNC_IDLE_MS
 
     const sync = async () => {
       if (cancelled || appStateRef.current !== "active") return
+      const before = useMessageStore.getState()
+      const beforeLoadedAt = before.loadedAt[id] ?? 0
+      const beforeCount = before.messages[id]?.length ?? 0
+
       try {
         await load(id, { force: true, limit: SESSION_OPEN_LIMIT, compact: true })
       } catch {
@@ -240,9 +346,20 @@ export default function SessionScreen() {
       }
 
       if (cancelled || appStateRef.current !== "active") return
+      const after = useMessageStore.getState()
+      const afterLoadedAt = after.loadedAt[id] ?? 0
+      const afterCount = after.messages[id]?.length ?? 0
+      const changed = afterLoadedAt !== beforeLoadedAt || afterCount !== beforeCount
+      if (changed) {
+        unchangedSyncs = 0
+      } else {
+        unchangedSyncs += 1
+      }
+      const delayMultiplier = Math.min(4, 1 + unchangedSyncs)
+      const nextDelay = Math.round(baseDelay * delayMultiplier)
       timer = setTimeout(() => {
         void sync()
-      }, isBusy ? MESSAGE_RESYNC_BUSY_MS : MESSAGE_RESYNC_IDLE_MS)
+      }, nextDelay)
     }
 
     void sync()
@@ -278,34 +395,34 @@ export default function SessionScreen() {
             ]}
           >
             <View style={styles.headerRow}>
-              <View style={[styles.sideRail, styles.sideRailLeft]}>
-                <Pressable
-                  style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
-                  onPress={openSidebar}
-                  accessibilityRole="button"
-                  accessibilityLabel="Open sidebar"
-                  hitSlop={8}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.modelButton,
+                  { borderColor: theme.colors.border, backgroundColor: theme.colors.surface },
+                  pressed && styles.iconButtonPressed,
+                ]}
+                onPress={openModelPicker}
+                accessibilityRole="button"
+                accessibilityLabel="Choose model"
+              >
+                <Text
+                  style={[styles.modelLabel, { color: theme.colors.text }]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.82}
                 >
-                  <FeatherIcon name="menu" size={18} color={theme.colors.text} />
-                </Pressable>
+                  {activeModel}
+                </Text>
+                <FeatherIcon name="chevron-right" size={13} color={theme.colors.textSecondary} />
+              </Pressable>
+
+              <View style={styles.titleSlot}>
+                <Text style={[styles.title, { color: theme.colors.text }]} numberOfLines={1} ellipsizeMode="tail">
+                  {shortTitle}
+                </Text>
               </View>
 
-              <View style={styles.titleSlot} pointerEvents="none">
-                <View style={styles.titleWrap}>
-                  <Text style={[styles.title, { color: theme.colors.text }]} numberOfLines={1} ellipsizeMode="tail">
-                    {title}
-                  </Text>
-                  <LinearGradient
-                    colors={[titleFadeStart, theme.colors.background]}
-                    start={{ x: 0, y: 0.5 }}
-                    end={{ x: 1, y: 0.5 }}
-                    style={styles.titleFade}
-                    pointerEvents="none"
-                  />
-                </View>
-              </View>
-
-              <View style={[styles.sideRail, styles.sideRailRight]}>
+              <View style={styles.actions}>
                 <Pressable
                   style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
                   onPress={() => void createSession()}
@@ -313,7 +430,12 @@ export default function SessionScreen() {
                   accessibilityLabel="New session"
                   hitSlop={8}
                 >
-                  <FeatherIcon name="edit-3" size={17} color={theme.colors.text} />
+                  <MaterialIcon
+                    style={styles.composeSymbol}
+                    name="square-edit-outline"
+                    size={18}
+                    color={theme.colors.text}
+                  />
                 </Pressable>
                 <Pressable
                   style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
@@ -328,7 +450,7 @@ export default function SessionScreen() {
             </View>
           </View>
 
-          {messages.length === 0 && loadingMessages ? (
+          {showLoadingSkeleton ? (
             <View style={styles.loadingState}>
               <MessageSkeleton />
               <MessageSkeleton />
@@ -338,16 +460,12 @@ export default function SessionScreen() {
             <MessagesList sessionId={id} messages={messages} topPadding={16} />
           )}
           <RequestBanner sessionId={id} />
-          <Composer sessionId={id} />
+          <Composer sessionId={id} pinnedTodo={pinnedTodo} />
         </View>
+        <ModelPicker visible={pickerVisible} onClose={() => setPickerVisible(false)} />
       </DisableFadeProvider>
     </ChatProvider>
   )
-}
-
-function withAlpha(color: string, alpha: string) {
-  if (!color.startsWith("#") || color.length !== 7) return color
-  return `${color}${alpha}`
 }
 
 const styles = StyleSheet.create({
@@ -365,19 +483,8 @@ const styles = StyleSheet.create({
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
-    minHeight: 38,
-  },
-  sideRail: {
-    width: 74,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  sideRailLeft: {
-    justifyContent: "flex-start",
-  },
-  sideRailRight: {
-    justifyContent: "flex-end",
-    gap: 14,
+    minHeight: 40,
+    gap: 7,
   },
   iconButton: {
     width: 30,
@@ -389,33 +496,40 @@ const styles = StyleSheet.create({
   iconButtonPressed: {
     opacity: 0.55,
   },
+  composeSymbol: {
+    marginTop: 0.5,
+  },
+  modelButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    minHeight: 26,
+    maxWidth: 220,
+    paddingHorizontal: 7,
+    flexShrink: 1,
+  },
+  modelLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    flexShrink: 1,
+  },
   titleSlot: {
     flex: 1,
     justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 14,
+    paddingRight: 2,
   },
-  titleWrap: {
-    width: "100%",
-    maxWidth: 280,
-    overflow: "hidden",
-    alignSelf: "center",
-    position: "relative",
+  actions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
   },
   title: {
     fontSize: 14,
     lineHeight: 19,
     fontWeight: "500",
-    textAlign: "center",
-    paddingRight: TITLE_FADE_WIDTH,
-    paddingLeft: 2,
-  },
-  titleFade: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    bottom: 0,
-    width: TITLE_FADE_WIDTH,
+    textAlign: "left",
   },
   loadingState: {
     flex: 1,
