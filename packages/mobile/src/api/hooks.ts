@@ -3,9 +3,9 @@ import { useSessions } from "../store/sessions"
 import { useMessages as useMessageStore } from "../store/messages"
 import { useRequests, type PendingQuestion } from "../store/requests"
 import { computeSummary } from "../store/diffs"
-import { resolveDiffLineCounts } from "../features/diff/counts"
 import { synthesizeSessionDiff } from "../features/diff/synthetic"
 import type { DiffSummary, SessionFileDiff } from "../features/diff/types"
+import { dedupeDiffs, normalizeDiffEntry, normalizeDiffList } from "../features/diff/normalize"
 import type { Message, Part, Session, SessionStatus } from "@opencode-ai/sdk/client"
 
 const EMPTY_MESSAGES: Message[] = []
@@ -42,7 +42,7 @@ export function useSessionList(): Session[] {
 }
 
 export function useSession(id: string): Session | undefined {
-  return useSessions((s) => s.sessions.find((session) => session.id === id))
+  return useSessions((s) => s.sessionByID[id])
 }
 
 export function useCurrentSessionId(): string | null {
@@ -63,31 +63,38 @@ export function useMessageParts(messageID: string): Part[] {
 
 export function useSessionPartsMap(sessionID: string | undefined): Record<string, Part[]> {
   const previous = useRef<Record<string, Part[]>>(EMPTY_PARTS_MAP)
-  return useMessageStore((s) => {
-    if (!sessionID) return EMPTY_PARTS_MAP
+  const messages = useMessageStore((s) => (sessionID ? s.messages[sessionID] ?? EMPTY_MESSAGES : EMPTY_MESSAGES))
+  const partsVersion = useMessageStore((s) => (sessionID ? s.partsVersionBySession[sessionID] ?? 0 : 0))
 
-    const messages = s.messages[sessionID]
-    if (!messages || messages.length === 0) return EMPTY_PARTS_MAP
+  return useMemo(() => {
+    if (!sessionID || messages.length === 0) {
+      if (previous.current !== EMPTY_PARTS_MAP) previous.current = EMPTY_PARTS_MAP
+      return EMPTY_PARTS_MAP
+    }
 
+    const partsByMessage = useMessageStore.getState().parts
+    const prior = previous.current
     let changed = false
+    let nextCount = 0
+    let previousCount = 0
     const next: Record<string, Part[]> = {}
 
+    for (const key in prior) previousCount += 1
+
     for (const message of messages) {
-      const parts = s.parts[message.id]
+      const parts = partsByMessage[message.id]
       if (!parts) continue
       next[message.id] = parts
-      if (previous.current[message.id] !== parts) changed = true
+      nextCount += 1
+      if (prior[message.id] !== parts) changed = true
     }
 
-    if (!changed) {
-      const previousKeys = Object.keys(previous.current)
-      if (previousKeys.length !== Object.keys(next).length) changed = true
-    }
+    if (!changed && previousCount !== nextCount) changed = true
+    if (!changed) return prior
 
-    if (!changed) return previous.current
     previous.current = next
     return next
-  })
+  }, [messages, partsVersion, sessionID])
 }
 
 export function useIsSending(sessionID: string): boolean {
@@ -151,91 +158,6 @@ export function useSessionQuestions(sessionID: string): PendingQuestion[] {
   return useMemo(() => questions.filter((item) => item.sessionID === sessionID), [questions, sessionID])
 }
 
-function asString(value: unknown) {
-  return typeof value === "string" ? value : ""
-}
-
-function asNumber(value: unknown) {
-  return Number.isFinite(value) ? Number(value) : 0
-}
-
-function resolveFilePath(diff: Record<string, unknown>) {
-  const candidates = [
-    diff.file,
-    diff.path,
-    diff.filePath,
-    diff.filepath,
-    diff.relativePath,
-    diff.filename,
-    diff.name,
-  ]
-  for (const candidate of candidates) {
-    const value = asString(candidate).trim()
-    if (value) return value
-  }
-  return ""
-}
-
-function normalizeDiffEntry(input: unknown): SessionFileDiff | null {
-  const diff = (input && typeof input === "object" ? input : {}) as Record<string, unknown>
-  const file = resolveFilePath(diff)
-  if (!file) return null
-  const before = asString(diff.before)
-  const after = asString(diff.after)
-  const providedAdditions = Math.max(0, asNumber(diff.additions))
-  const providedDeletions = Math.max(0, asNumber(diff.deletions))
-  const status = asString(diff.status || diff.type) || undefined
-  const { additions, deletions } = resolveDiffLineCounts({
-    file,
-    before,
-    after,
-    additions: providedAdditions,
-    deletions: providedDeletions,
-    status,
-  })
-
-  return {
-    file,
-    before,
-    after,
-    additions,
-    deletions,
-    status,
-  }
-}
-
-function dedupeDiffs(input: SessionFileDiff[]): SessionFileDiff[] {
-  const byFile = new Map<string, SessionFileDiff>()
-  for (const entry of input) {
-    if (!entry.file) continue
-    const previous = byFile.get(entry.file)
-    if (!previous) {
-      byFile.set(entry.file, entry)
-      continue
-    }
-
-    const before = entry.before || previous.before
-    const after = entry.after || previous.after
-    byFile.set(entry.file, {
-      file: entry.file,
-      before,
-      after,
-      additions: Math.max(previous.additions, entry.additions),
-      deletions: Math.max(previous.deletions, entry.deletions),
-      status: entry.status ?? previous.status,
-    })
-  }
-  return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file))
-}
-
-function normalizeList(input: unknown): SessionFileDiff[] {
-  if (!Array.isArray(input) || input.length === 0) return EMPTY_DIFFS
-  const normalized = input
-    .map((item) => normalizeDiffEntry(item))
-    .filter((item): item is SessionFileDiff => !!item)
-  return normalized.length > 0 ? dedupeDiffs(normalized) : EMPTY_DIFFS
-}
-
 function deriveHistoryDiffs(messages: Message[]) {
   if (!Array.isArray(messages) || messages.length === 0) return EMPTY_DIFFS
 
@@ -251,7 +173,7 @@ function deriveHistoryDiffs(messages: Message[]) {
       continue
     }
 
-    const next = normalizeList(summary.diffs)
+    const next = normalizeDiffList(summary.diffs, EMPTY_DIFFS)
     messageSummaryDiffCache.set(message.id, {
       source: summary.diffs,
       value: next,

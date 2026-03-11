@@ -7,7 +7,7 @@ import * as Clipboard from "expo-clipboard"
 import { useMessageParts } from "../../api/hooks"
 import { useMessages } from "../../store/messages"
 import { useTheme } from "../../theme"
-import { type TodoSnapshot, isTodoToolPart, PartRenderer, TodoPanel } from "./part"
+import { isTodoToolPart, PartRenderer } from "./part"
 
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
 
@@ -15,14 +15,12 @@ type Props = {
   message: AssistantMessageData
   showFooter?: boolean
   diffFooter?: ReactNode
-  completedTodo?: TodoSnapshot | null
 }
 
 export const AssistantMessage = memo(function AssistantMessage({
   message,
   showFooter = false,
   diffFooter = null,
-  completedTodo = null,
 }: Props) {
   const theme = useTheme()
   const parts = useMessageParts(message.id)
@@ -62,7 +60,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     })
   }, [canRetry, message.id, message.sessionID, send])
 
-  if (visibleParts.length === 0 && !completedTodo && !diffFooter && !showFooter) return null
+  if (visibleParts.length === 0 && !diffFooter && !showFooter) return null
 
   return (
     <View style={styles.container}>
@@ -77,7 +75,6 @@ export const AssistantMessage = memo(function AssistantMessage({
             onHydrateMessage={onHydrateMessage}
           />
         ))}
-        {completedTodo ? <TodoPanel snapshot={completedTodo} /> : null}
       </View>
       {showFooter ? (
         <View style={styles.footer}>

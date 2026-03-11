@@ -531,29 +531,20 @@ function ToolDetailView({
 
 export function TodoPanel({
   snapshot,
-  variant = "inline",
+  expanded = true,
   live = false,
+  onToggle,
 }: {
   snapshot: TodoSnapshot
-  variant?: "inline" | "pinned"
+  expanded?: boolean
   live?: boolean
+  onToggle?: () => void
 }) {
   const theme = useTheme()
   const completedSummary = `${snapshot.completedCount} of ${snapshot.todos.length} todos completed`
-  const standalone = variant === "inline"
 
   return (
-    <View
-      style={[
-        styles.todoPanel,
-        standalone
-          ? {
-              backgroundColor: theme.colors.surfaceRaised,
-              borderColor: theme.colors.borderSubtle,
-            }
-          : styles.todoPanelPinned,
-      ]}
-    >
+    <View style={styles.todoPanel}>
       <View style={styles.todoHead}>
         <View style={styles.todoHeadText}>
           <Text style={[styles.todoSummary, { color: theme.colors.text }]}>
@@ -574,9 +565,14 @@ export function TodoPanel({
             </View>
           ) : null}
         </View>
+        {onToggle ? (
+          <Pressable onPress={onToggle} hitSlop={8} accessibilityRole="button" accessibilityLabel={expanded ? "Collapse todos" : "Expand todos"}>
+            <FeatherIcon name={expanded ? "chevron-up" : "chevron-down"} size={18} color={theme.colors.textTertiary} />
+          </Pressable>
+        ) : null}
       </View>
 
-      {snapshot.todos.length === 0 ? (
+      {!expanded ? null : snapshot.todos.length === 0 ? (
         <Text style={[styles.todoEmpty, { color: theme.colors.textTertiary }]}>No todos yet</Text>
       ) : (
         <View style={styles.todoList}>
@@ -981,17 +977,6 @@ export function resolveLatestTodoSnapshot(parts: Part[]) {
   return null
 }
 
-export function resolveCompletedTodoSnapshot(parts: Part[], isStreamingComplete: boolean) {
-  if (!isStreamingComplete) return null
-  for (let i = parts.length - 1; i >= 0; i -= 1) {
-    const part = parts[i]
-    if (!isTodoToolPart(part)) continue
-    const snapshot = buildTodoSnapshot(part)
-    if (snapshot?.isComplete) return snapshot
-  }
-  return null
-}
-
 function todoStatusLabel(status: string) {
   if (status === "in_progress") return "ACTIVE"
   if (status === "pending") return "PENDING"
@@ -1250,17 +1235,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   todoPanel: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 12,
-    paddingHorizontal: 11,
-    paddingVertical: 10,
     gap: 10,
-  },
-  todoPanelPinned: {
-    borderWidth: 0,
-    borderRadius: 0,
-    paddingHorizontal: 0,
-    paddingVertical: 0,
   },
   todoHead: {
     flexDirection: "row",

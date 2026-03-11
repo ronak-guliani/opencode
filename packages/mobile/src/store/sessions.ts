@@ -28,6 +28,7 @@ async function listStatusesByProject(project: Project): Promise<Record<string, S
 type SessionState = {
   projects: Project[]
   sessions: Session[]
+  sessionByID: Record<string, Session>
   statuses: Record<string, SessionStatus>
   current: string | null
   loading: boolean
@@ -46,6 +47,7 @@ type SessionState = {
 export const useSessions = createStore<SessionState>((set, get) => ({
   projects: [],
   sessions: [],
+  sessionByID: {},
   statuses: {},
   current: null,
   loading: false,
@@ -54,6 +56,7 @@ export const useSessions = createStore<SessionState>((set, get) => ({
     set({
       projects: [],
       sessions: [],
+      sessionByID: {},
       statuses: {},
       current: null,
       loading: false,
@@ -79,13 +82,15 @@ export const useSessions = createStore<SessionState>((set, get) => ({
       )
       const sorted = groups.flat().sort((a, b) => b.time.updated - a.time.updated)
       const deduped: Session[] = []
+      const sessionByID: Record<string, Session> = {}
       const seen = new Set<string>()
       for (const session of sorted) {
         if (seen.has(session.id)) continue
         seen.add(session.id)
         deduped.push(session)
+        sessionByID[session.id] = session
       }
-      set({ projects, sessions: deduped, loading: false })
+      set({ projects, sessions: deduped, sessionByID, loading: false })
       addCrashBreadcrumb("sessions-fetch:done", {
         projects: projects.length,
         sessions: deduped.length,
@@ -117,10 +122,11 @@ export const useSessions = createStore<SessionState>((set, get) => ({
           }
         }),
       )
-      const merged = statuses.reduce<Record<string, SessionStatus>>((acc, item) => {
-        if (!item) return acc
-        return { ...acc, ...item }
-      }, {})
+      const merged: Record<string, SessionStatus> = {}
+      for (const item of statuses) {
+        if (!item) continue
+        Object.assign(merged, item)
+      }
       set({ statuses: merged })
       addCrashBreadcrumb("sessions-status:done", {
         projects: projects.length,
@@ -178,16 +184,22 @@ export const useSessions = createStore<SessionState>((set, get) => ({
     set((state) => {
       const existing = state.sessions.find((s) => s.id === session.id)
       const without = existing ? state.sessions.filter((s) => s.id !== session.id) : state.sessions
-      return { sessions: [session, ...without].sort((a, b) => b.time.updated - a.time.updated) }
+      return {
+        sessions: [session, ...without].sort((a, b) => b.time.updated - a.time.updated),
+        sessionByID: { ...state.sessionByID, [session.id]: session },
+      }
     })
   },
 
   _remove: (id) => {
     set((state) => {
       const nextStatuses = { ...state.statuses }
+      const nextByID = { ...state.sessionByID }
       delete nextStatuses[id]
+      delete nextByID[id]
       return {
         sessions: state.sessions.filter((s) => s.id !== id),
+        sessionByID: nextByID,
         statuses: nextStatuses,
         current: state.current === id ? null : state.current,
       }

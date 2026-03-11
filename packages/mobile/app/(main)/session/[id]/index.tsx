@@ -84,12 +84,11 @@ export default function SessionScreen() {
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isBusy = sessionStatus?.type === "busy"
   const shouldShowLoadingState = messages.length === 0 && (loadingMessages || loadedAt === 0)
-  const liveTodo = useMemo(() => {
+  const pinnedTodo = useMemo(() => {
     let end = -1
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const candidate = messages[i]
       if (!candidate || candidate.role !== "assistant") continue
-      if (candidate.time.completed) return null
       end = i
       break
     }
@@ -101,11 +100,13 @@ export default function SessionScreen() {
       start -= 1
     }
 
+    const tail = messages[end]
+    const live = !!(tail && "completed" in tail.time ? !tail.time.completed : true)
     for (let i = end; i >= start; i -= 1) {
       const candidate = messages[i]
       if (!candidate || candidate.role !== "assistant") continue
       const snapshot = resolveLatestTodoSnapshot(partsByMessage[candidate.id] ?? [])
-      if (snapshot) return snapshot
+      if (snapshot) return { snapshot, live }
     }
 
     return null
@@ -459,7 +460,7 @@ export default function SessionScreen() {
             <MessagesList sessionId={id} messages={messages} topPadding={16} />
           )}
           <RequestBanner sessionId={id} />
-          <Composer sessionId={id} liveTodo={liveTodo} />
+          <Composer sessionId={id} pinnedTodo={pinnedTodo} />
         </View>
         <ModelPicker visible={pickerVisible} onClose={() => setPickerVisible(false)} />
       </DisableFadeProvider>

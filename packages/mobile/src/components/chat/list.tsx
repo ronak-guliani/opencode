@@ -21,8 +21,8 @@ import { useMessages } from "../../store/messages"
 import { useSessions } from "../../store/sessions"
 import { computeSummary, useDiffs } from "../../store/diffs"
 import type { SessionFileDiff } from "../../features/diff/types"
+import { normalizeDiffList } from "../../features/diff/normalize"
 import { synthesizeSessionDiff } from "../../features/diff/synthetic"
-import { resolveDiffLineCounts } from "../../features/diff/counts"
 import { addCrashBreadcrumb } from "../../perf/crash-breadcrumbs"
 import { useSessionDiffSummary, useSessionPartsMap } from "../../api/hooks"
 import { useChat } from "./provider"
@@ -30,7 +30,6 @@ import { useTheme } from "../../theme"
 import { UserMessage } from "./user-message"
 import { AssistantMessage } from "./assistant-message"
 import { DiffSummaryCard } from "./diff-summary-card"
-import { resolveCompletedTodoSnapshot, type TodoSnapshot } from "./part"
 import {
   hasChanges,
   resolveEffectiveSessionData,
@@ -59,7 +58,6 @@ const Glass = LiquidGlassView as React.ComponentType<{
 }>
 const EMPTY_DIFFS: SessionFileDiff[] = []
 const EMPTY_DIFF_FOOTERS: DiffFooterMeta[] = []
-const EMPTY_COMPLETED_TODOS = new Map<string, TodoSnapshot>()
 
 type Props = {
   sessionId: string
@@ -75,84 +73,6 @@ function asNumber(value: unknown) {
   return Number.isFinite(value) ? Number(value) : 0
 }
 
-function resolveFilePath(diff: Record<string, unknown>) {
-  const candidates = [
-    diff.file,
-    diff.path,
-    diff.filePath,
-    diff.filepath,
-    diff.relativePath,
-    diff.filename,
-    diff.name,
-  ]
-  for (const candidate of candidates) {
-    const value = asString(candidate).trim()
-    if (value) return value
-  }
-  return ""
-}
-
-function normalizeDiffEntry(input: unknown): SessionFileDiff | null {
-  const diff = (input && typeof input === "object" ? input : {}) as Record<string, unknown>
-  const file = resolveFilePath(diff)
-  if (!file) return null
-  const before = asString(diff.before)
-  const after = asString(diff.after)
-  const providedAdditions = Math.max(0, asNumber(diff.additions))
-  const providedDeletions = Math.max(0, asNumber(diff.deletions))
-  const status = asString(diff.status || diff.type) || undefined
-  const { additions, deletions } = resolveDiffLineCounts({
-    file,
-    before,
-    after,
-    additions: providedAdditions,
-    deletions: providedDeletions,
-    status,
-  })
-
-  return {
-    file,
-    before,
-    after,
-    additions,
-    deletions,
-    status,
-  }
-}
-
-function dedupeDiffs(input: SessionFileDiff[]): SessionFileDiff[] {
-  const byFile = new Map<string, SessionFileDiff>()
-  for (const entry of input) {
-    if (!entry.file) continue
-    const previous = byFile.get(entry.file)
-    if (!previous) {
-      byFile.set(entry.file, entry)
-      continue
-    }
-
-    const before = entry.before || previous.before
-    const after = entry.after || previous.after
-    byFile.set(entry.file, {
-      file: entry.file,
-      before,
-      after,
-      additions: Math.max(previous.additions, entry.additions),
-      deletions: Math.max(previous.deletions, entry.deletions),
-      status: entry.status ?? previous.status,
-    })
-  }
-  return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file))
-}
-
-function normalizeDiffList(input: unknown): SessionFileDiff[] {
-  if (!Array.isArray(input) || input.length === 0) return EMPTY_DIFFS
-  const normalized = input
-    .map((item) => normalizeDiffEntry(item))
-    .filter((item): item is SessionFileDiff => !!item)
-  if (normalized.length === 0) return EMPTY_DIFFS
-  return dedupeDiffs(normalized)
-}
-
 export function MessagesList({ sessionId, messages, topPadding }: Props) {
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -162,7 +82,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   const loadMore = useMessages((s) => s.loadMore)
   const loadingSession = useMessages(useCallback((s) => s.loading[sessionId] ?? false, [sessionId]))
   const exhaustedSession = useMessages(useCallback((s) => s.exhausted[sessionId] ?? false, [sessionId]))
-  const session = useSessions(useCallback((s) => s.sessions.find((item) => item.id === sessionId), [sessionId]))
+  const session = useSessions(useCallback((s) => s.sessionByID[sessionId], [sessionId]))
   const isBusy = useSessions(useCallback((s) => s.statuses[sessionId]?.type === "busy", [sessionId]))
   const fetchSessionDiff = useDiffs((s) => s.fetchSessionDiff)
   const sessionDiffs = useDiffs(useCallback((s) => s.bySession[sessionId] ?? EMPTY_DIFFS, [sessionId]))
@@ -225,47 +145,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     }
     return -1
   }, [messages])
-  const completedTodoByAssistantID = useMemo(() => {
-    if (messages.length === 0) return EMPTY_COMPLETED_TODOS
-
-    const byAssistantID = new Map<string, TodoSnapshot>()
-    let index = 0
-
-    while (index < messages.length) {
-      const start = index
-      while (index < messages.length && messages[index]?.role === "assistant") {
-        index += 1
-      }
-      if (index === start) {
-        index += 1
-        continue
-      }
-
-      let snapshot: TodoSnapshot | null = null
-      for (let cursor = index - 1; cursor >= start; cursor -= 1) {
-        const candidate = messages[cursor]
-        if (!candidate || candidate.role !== "assistant") continue
-        snapshot = resolveCompletedTodoSnapshot(partsByMessage[candidate.id] ?? [], !!candidate.time.completed)
-        if (snapshot) break
-      }
-
-      if (snapshot) {
-        const tail = messages[index - 1]
-        if (tail?.role === "assistant") {
-          byAssistantID.set(tail.id, snapshot)
-        }
-      }
-    }
-
-    return byAssistantID
-  }, [messages, partsByMessage])
-
-  const apiDiffs = useMemo(() => {
-    const normalized = sessionDiffs
-      .map((item) => normalizeDiffEntry(item))
-      .filter((item): item is SessionFileDiff => !!item)
-    return dedupeDiffs(normalized)
-  }, [sessionDiffs])
+  const apiDiffs = useMemo(() => normalizeDiffList(sessionDiffs, EMPTY_DIFFS), [sessionDiffs])
   const hasRenderableSessionDiffs = apiDiffs.length > 0
   const includeSyntheticFallback =
     !isBusy && !hasRenderableSessionDiffs && messages.length > 0 && messages.length <= SYNTHETIC_FALLBACK_MAX_MESSAGES
@@ -432,7 +312,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
         }
       }
 
-      const turnDiffs = resolveTurnDiffs(summaryDiffs, syntheticDiffs, { preferSynthetic: true })
+      const turnDiffs = resolveTurnDiffs(summaryDiffs, syntheticDiffs)
       const turnSummary = computeSummary(turnDiffs)
       const turnFooterMeta = resolveTurnFooterMeta({
         latestTurnDiffs: turnDiffs,
@@ -560,7 +440,6 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
           <AssistantMessage
             message={item}
             showFooter={index === latestAssistantIndex}
-            completedTodo={completedTodoByAssistantID.get(item.id) ?? null}
             diffFooter={
               footerMetas.length > 0 ? (
                 <View style={styles.diffFooterStack}>
@@ -572,7 +451,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
                       diffs={meta.diffs}
                       summary={meta.summary}
                       isUpdating={meta.isUpdating}
-                      onPress={() => openDiff(meta)}
+                      onOpenDiff={() => openDiff(meta)}
                     />
                   ))}
                 </View>
@@ -583,7 +462,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
       }
       return null
     },
-    [completedTodoByAssistantID, diffFootersByAssistantID, latestAssistantIndex, logMalformedMessage, openDiff],
+    [diffFootersByAssistantID, latestAssistantIndex, logMalformedMessage, openDiff],
   )
 
   const keyExtractor = useCallback((item: Message, index: number) => {
@@ -830,7 +709,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
               diffs={sessionFooterMeta.diffs}
               summary={sessionFooterMeta.summary}
               isUpdating={sessionFooterMeta.isUpdating}
-              onPress={() => openDiff(sessionFooterMeta)}
+              onOpenDiff={() => openDiff(sessionFooterMeta)}
             />
           ) : null
         }

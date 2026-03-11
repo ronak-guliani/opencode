@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { View, TextInput, Pressable, StyleSheet, Platform, Alert, type LayoutChangeEvent } from "react-native"
 import { KeyboardStickyView } from "react-native-keyboard-controller"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
@@ -11,15 +11,22 @@ import { useTheme } from "../../theme"
 import { type TodoSnapshot, TodoPanel } from "./part"
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
 
-type Props = {
-  sessionId: string
-  liveTodo?: TodoSnapshot | null
+type PinnedTodo = {
+  snapshot: TodoSnapshot
+  live: boolean
 }
 
-export function Composer({ sessionId, liveTodo = null }: Props) {
+type Props = {
+  sessionId: string
+  pinnedTodo?: PinnedTodo | null
+}
+
+export function Composer({ sessionId, pinnedTodo = null }: Props) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
   const [text, setText] = useState("")
+  const [todoExpanded, setTodoExpanded] = useState(true)
+  const previousTodoPartID = useRef("")
   const send = useMessages((s) => s.send)
   const abort = useMessages((s) => s.abort)
   const sending = useIsSending(sessionId)
@@ -28,6 +35,22 @@ export function Composer({ sessionId, liveTodo = null }: Props) {
 
   const busy = status?.type === "busy"
   const trimmedText = text.trim()
+
+  useEffect(() => {
+    if (!pinnedTodo) {
+      previousTodoPartID.current = ""
+      setTodoExpanded(true)
+      return
+    }
+    if (previousTodoPartID.current !== pinnedTodo.snapshot.part.id) {
+      previousTodoPartID.current = pinnedTodo.snapshot.part.id
+      setTodoExpanded(true)
+      return
+    }
+    if (pinnedTodo.live) {
+      setTodoExpanded(true)
+    }
+  }, [pinnedTodo?.live, pinnedTodo?.snapshot.part.id])
 
   const handleSend = useCallback(async () => {
     const content = text.trim()
@@ -100,10 +123,15 @@ export function Composer({ sessionId, liveTodo = null }: Props) {
             },
           ]}
         >
-          {liveTodo ? (
+          {pinnedTodo ? (
             <>
               <View style={styles.todoPinnedSection}>
-                <TodoPanel snapshot={liveTodo} variant="pinned" live />
+                <TodoPanel
+                  snapshot={pinnedTodo.snapshot}
+                  expanded={todoExpanded}
+                  live={pinnedTodo.live}
+                  onToggle={() => setTodoExpanded((current) => !current)}
+                />
               </View>
               <View style={[styles.todoDivider, { borderTopColor: theme.colors.border + "99" }]} />
             </>

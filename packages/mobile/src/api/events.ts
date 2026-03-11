@@ -8,6 +8,7 @@ import { useConnection } from "../store/connection"
 import { useDiffs } from "../store/diffs"
 import { markStreamFlush } from "../perf/chat-metrics"
 import { streamFlushPolicy } from "../config/feature-flags"
+import { coalesceDeltaBatch, parseSSE, resolveSessionDiffPayload, type AppEvent, type MessagePartDeltaEvent } from "./events.logic"
 
 // Opt-in debug flag for SSE diagnostics on device:
 // globalThis.__OPENCODE_MOBILE_SSE_DEBUG__ = true
@@ -18,19 +19,6 @@ type Subscriber = {
   active: boolean
   xhr: XMLHttpRequest | null
 }
-
-type MessagePartDeltaEvent = {
-  type: "message.part.delta"
-  properties: {
-    sessionID: string
-    messageID: string
-    partID: string
-    field: string
-    delta: string
-  }
-}
-
-type AppEvent = Event | MessagePartDeltaEvent
 
 type MessageEvent =
   | Extract<Event, { type: "message.updated" }>
@@ -47,20 +35,19 @@ const IDLE_MESSAGE_RESYNC_LIMIT = 80
 
 let subscriber: Subscriber | null = null
 
-function isPartDeltaEvent(event: AppEvent): event is MessagePartDeltaEvent {
-  return event.type === "message.part.delta"
-}
-
-function deltaKey(event: MessagePartDeltaEvent) {
-  return `${event.properties.sessionID}:${event.properties.messageID}:${event.properties.partID}:${event.properties.field}`
-}
-
 function coalesce(queue: AppEvent[], event: AppEvent): { mergedDeltaChunk: boolean } {
-  if (isPartDeltaEvent(event)) {
+  if (event.type === "message.part.delta") {
     const previous = queue[queue.length - 1]
-    if (previous && isPartDeltaEvent(previous) && deltaKey(previous) === deltaKey(event)) {
-      previous.properties.delta += event.properties.delta
-      return { mergedDeltaChunk: true }
+    if (previous?.type === "message.part.delta") {
+      const sameKey =
+        previous.properties.sessionID === event.properties.sessionID &&
+        previous.properties.messageID === event.properties.messageID &&
+        previous.properties.partID === event.properties.partID &&
+        previous.properties.field === event.properties.field
+      if (sameKey) {
+        previous.properties.delta += event.properties.delta
+        return { mergedDeltaChunk: true }
+      }
     }
     queue.push(event)
     return { mergedDeltaChunk: false }
@@ -141,12 +128,7 @@ function applyBatch(events: AppEvent[]) {
           break
         case "session.diff":
           {
-            const payload = event.properties as { diff?: unknown; diffs?: unknown }
-            const nextDiff = Array.isArray(payload.diff)
-              ? payload.diff
-              : Array.isArray(payload.diffs)
-                ? payload.diffs
-                : []
+            const nextDiff = resolveSessionDiffPayload(event.properties as { diff?: unknown; diffs?: unknown })
             diffs.setSessionDiff(event.properties.sessionID, nextDiff as never[])
           }
           break
@@ -183,92 +165,6 @@ function applyBatch(events: AppEvent[]) {
   }
 }
 
-function coalesceDeltaBatch(events: AppEvent[]) {
-  if (!STREAM_FLUSH_POLICY.coalesceDeltaByKey) {
-    const deltaEvents = events.reduce((acc, event) => (event.type === "message.part.delta" ? acc + 1 : acc), 0)
-    return {
-      events,
-      merged: 0,
-      deltaEvents,
-    }
-  }
-
-  const merged: AppEvent[] = []
-  const indexByKey = new Map<string, number>()
-  let mergedCount = 0
-  let deltaEvents = 0
-
-  for (const event of events) {
-    if (!isPartDeltaEvent(event)) {
-      merged.push(event)
-      continue
-    }
-
-    deltaEvents += 1
-    const key = deltaKey(event)
-    const existingIndex = indexByKey.get(key)
-    if (existingIndex === undefined) {
-      indexByKey.set(key, merged.length)
-      merged.push({
-        ...event,
-        properties: { ...event.properties },
-      })
-      continue
-    }
-
-    const existing = merged[existingIndex]
-    if (!existing || !isPartDeltaEvent(existing)) {
-      indexByKey.set(key, merged.length)
-      merged.push({
-        ...event,
-        properties: { ...event.properties },
-      })
-      continue
-    }
-
-    existing.properties.delta += event.properties.delta
-    mergedCount += 1
-  }
-
-  return {
-    events: merged,
-    merged: mergedCount,
-    deltaEvents,
-  }
-}
-
-// Parse SSE events from a text buffer.
-// Returns parsed events and the remaining incomplete buffer.
-function parseSSE(buffer: string): { events: AppEvent[]; remaining: string } {
-  buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-  const chunks = buffer.split("\n\n")
-  const remaining = chunks.pop() ?? ""
-  const events: AppEvent[] = []
-
-  for (const chunk of chunks) {
-    if (!chunk.trim()) continue
-    const lines = chunk.split("\n")
-    const dataLines: string[] = []
-
-    for (const line of lines) {
-      if (line.startsWith("data:")) {
-        dataLines.push(line.slice(5).trimStart())
-      }
-    }
-
-    if (!dataLines.length) continue
-
-    try {
-      const parsed = JSON.parse(dataLines.join("\n")) as AppEvent
-      events.push(parsed)
-    } catch {
-      if (DEBUG) console.warn("[sse] failed to parse:", dataLines.join("\n").slice(0, 100))
-    }
-  }
-
-  return { events, remaining }
-}
-
 function connect(current: Subscriber): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!current.active) {
@@ -300,7 +196,7 @@ function connect(current: Subscriber): Promise<void> {
         return
       }
 
-      const { events: batch, merged, deltaEvents } = coalesceDeltaBatch(queued)
+      const { events: batch, merged, deltaEvents } = coalesceDeltaBatch(queued, STREAM_FLUSH_POLICY.coalesceDeltaByKey)
       const start = globalThis.performance?.now?.() ?? Date.now()
       applyBatch(batch)
       const elapsed = (globalThis.performance?.now?.() ?? Date.now()) - start
