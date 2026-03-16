@@ -19,7 +19,6 @@ type ConnectAndBootstrapOptions = {
   url: string
   auth?: ServerAuth
   refreshSessions?: boolean
-  requireRefreshSuccess?: boolean
 }
 
 export type ConnectAndBootstrapResult =
@@ -103,13 +102,8 @@ export async function connectAndBootstrap(
     try {
       await Promise.all([deps.fetchSessions(), deps.fetchStatuses()])
     } catch (error) {
-      if (options.requireRefreshSuccess) {
-        return {
-          status: "error",
-          stage: "refresh",
-          error: toErrorMessage(error, "Connected, but failed to refresh session data"),
-        }
-      }
+      // Log but don't fail — connection is successful, just session refresh had an issue
+      console.warn("Session refresh failed:", toErrorMessage(error))
     }
   }
 

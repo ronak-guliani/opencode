@@ -47,6 +47,8 @@ export default function ConnectScreen() {
       if (result.stage === "bootstrap") {
         setBootstrapError(result.error)
       }
+      // Note: connect-stage errors are already set in the store via useConnection.connect()
+      // The store's error state is rendered via the `error` selector above
       return
     }
     router.replace("/(main)/session")

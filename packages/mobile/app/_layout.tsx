@@ -49,6 +49,10 @@ export default function RootLayout() {
       try {
         const [restored] = await Promise.all([restore(), restoreAppearance()])
         if (restored) {
+          // Note: We call bootstrap() directly here (not connectAndBootstrap) because:
+          // - This is app startup, not a user-initiated connection
+          // - Connection already exists from restore() — we're just hydrating session state
+          // - connectAndBootstrap is for user-driven connect/server-switch flows
           await bootstrap()
         }
       } finally {

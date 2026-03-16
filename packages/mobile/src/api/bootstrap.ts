@@ -5,10 +5,17 @@ import { subscribe, unsubscribe } from "./events"
 
 export type BootstrapStatus = "loading" | "partial" | "complete" | "error"
 
-export type BootstrapResult = {
-  status: BootstrapStatus
+export type BootstrapResultError = {
+  status: "error"
+  error: string
+}
+
+export type BootstrapResultSuccess = {
+  status: Exclude<BootstrapStatus, "error">
   error?: string
 }
+
+export type BootstrapResult = BootstrapResultSuccess | BootstrapResultError
 
 export async function bootstrap(): Promise<BootstrapResult> {
   try {

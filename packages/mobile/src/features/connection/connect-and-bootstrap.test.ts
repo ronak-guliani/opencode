@@ -104,24 +104,4 @@ describe("connectAndBootstrap", () => {
     expect(refreshCalls).toBeGreaterThan(0)
     expect(result).toEqual({ status: "success" })
   })
-
-  test("returns refresh-stage error when refresh is required", async () => {
-    const result = await connectAndBootstrap(
-      { url: "https://example.test", refreshSessions: true, requireRefreshSuccess: true },
-      {
-        connect: async () => undefined,
-        bootstrap: async () => ({ status: "complete" as const }),
-        fetchSessions: async () => {
-          throw new Error("session refresh failed")
-        },
-        fetchStatuses: async () => undefined,
-      },
-    )
-
-    expect(result).toEqual({
-      status: "error",
-      stage: "refresh",
-      error: "session refresh failed",
-    })
-  })
 })
