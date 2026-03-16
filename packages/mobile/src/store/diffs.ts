@@ -5,6 +5,7 @@ import { headers, url } from "../api/client"
 import type { DiffSummary, SessionFileDiff } from "../features/diff/types"
 import { normalizeDiffList } from "../features/diff/normalize"
 import { useSessions } from "./sessions"
+import { toErrorMessage } from "../util/error-message"
 
 const DIFF_CACHE_TTL_MS = 30_000
 
@@ -51,11 +52,6 @@ async function fetchDiffForSession(sessionID: string) {
 
   const currentWorktree = headers()["x-opencode-directory"]
   return await fetchDiffFromWorktree(sessionID, currentWorktree || undefined)
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) return error.message
-  return "Could not load session diff."
 }
 
 export function computeSummary(diff: SessionFileDiff[]): DiffSummary {
@@ -145,7 +141,7 @@ export const useDiffs = createStore<DiffState>((set, get) => ({
         },
         error: {
           ...prev.error,
-          [sessionID]: toErrorMessage(error),
+          [sessionID]: toErrorMessage(error, "Could not load session diff."),
         },
       }))
     }

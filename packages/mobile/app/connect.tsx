@@ -12,13 +12,12 @@ import {
 } from "react-native"
 import { useRouter } from "expo-router"
 import { useConnection } from "../src/store/connection"
-import { bootstrap } from "../src/api/bootstrap"
+import { connectAndBootstrap } from "../src/features/connection/connect-and-bootstrap"
 import { useTheme } from "../src/theme"
 
 export default function ConnectScreen() {
   const theme = useTheme()
   const router = useRouter()
-  const connect = useConnection((s) => s.connect)
   const servers = useConnection((s) => s.servers)
   const status = useConnection((s) => s.status)
   const error = useConnection((s) => s.error)
@@ -39,20 +38,19 @@ export default function ConnectScreen() {
   const handleConnect = useCallback(async () => {
     if (!url.trim()) return
     setBootstrapError(null)
-    try {
-      const auth = showAuth && username.trim() && password.length > 0 ? { username: username.trim(), password } : undefined
-      const normalized = url.trim()
-      await connect(normalized, auth)
-      const result = await bootstrap()
-      if (result.status === "error") {
-        setBootstrapError(result.error ?? "Bootstrap failed")
-        return
+    const auth = showAuth && username.trim() && password.length > 0 ? { username: username.trim(), password } : undefined
+    const result = await connectAndBootstrap({
+      url: url.trim(),
+      auth,
+    })
+    if (result.status === "error") {
+      if (result.stage === "bootstrap") {
+        setBootstrapError(result.error)
       }
-      router.replace("/(main)/session")
-    } catch {
-      // connection error is already set in the store
+      return
     }
-  }, [url, username, password, showAuth, connect, router])
+    router.replace("/(main)/session")
+  }, [password, router, showAuth, url, username])
 
   const connecting = status === "connecting"
 

@@ -3,9 +3,9 @@ import { useSettings } from "../store/settings"
 import { useRequests } from "../store/requests"
 import { subscribe, unsubscribe } from "./events"
 
-type BootstrapStatus = "loading" | "partial" | "complete" | "error"
+export type BootstrapStatus = "loading" | "partial" | "complete" | "error"
 
-type BootstrapResult = {
+export type BootstrapResult = {
   status: BootstrapStatus
   error?: string
 }

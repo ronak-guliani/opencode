@@ -15,10 +15,10 @@ import {
 import Feather from "@expo/vector-icons/Feather"
 import { useRouter } from "expo-router"
 import { LiquidGlassContainerView, LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
-import { bootstrap } from "../../api/bootstrap"
+import { connectAndBootstrap } from "../../features/connection/connect-and-bootstrap"
 import { useConnection } from "../../store/connection"
-import { useSessions } from "../../store/sessions"
 import { useTheme } from "../../theme"
+import { toErrorMessage } from "../../util/error-message"
 import { normalizeServerUrl, serverDisplayName } from "../../util/server"
 
 type Props = {
@@ -52,12 +52,6 @@ const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; si
 const AUTO_POLL_MS = 12_000
 const AUTO_SKIP_AFTER_MANUAL_MS = 5_000
 
-function toErrorMessage(error: unknown) {
-  if (error instanceof Error) return error.message
-  if (typeof error === "string") return error
-  return "Request failed"
-}
-
 function statusColor(state: HealthState, palette: ReturnType<typeof useTheme>["colors"]) {
   if (state === "online") return palette.success
   if (state === "offline") return palette.error
@@ -82,7 +76,6 @@ export const ServerSwitcher = memo(function ServerSwitcher({ sidebarVisible, onS
   const activeServerUrl = useConnection((s) => s.activeServerUrl)
   const connectionStatus = useConnection((s) => s.status)
   const activeVersion = useConnection((s) => s.serverVersion)
-  const connect = useConnection((s) => s.connect)
   const saveServer = useConnection((s) => s.saveServer)
   const probeServers = useConnection((s) => s.probeServers)
 
@@ -235,12 +228,14 @@ export const ServerSwitcher = memo(function ServerSwitcher({ sidebarVisible, onS
       setListError(null)
       setSwitchingURL(targetUrl)
       try {
-        await connect(targetUrl)
-        const result = await bootstrap()
+        const result = await connectAndBootstrap({
+          url: targetUrl,
+          refreshSessions: true,
+        })
         if (result.status === "error") {
-          throw new Error(result.error ?? "Bootstrap failed")
+          setListError(result.error)
+          return
         }
-        await Promise.all([useSessions.getState().fetch(), useSessions.getState().fetchStatuses()])
         setListOpen(false)
         router.replace("/(main)/session")
         onServerSwitched?.()
@@ -250,7 +245,7 @@ export const ServerSwitcher = memo(function ServerSwitcher({ sidebarVisible, onS
         setSwitchingURL(null)
       }
     },
-    [connect, onServerSwitched, resolveHealth, router],
+    [onServerSwitched, resolveHealth, router],
   )
 
   const handleAddServer = useCallback(async () => {

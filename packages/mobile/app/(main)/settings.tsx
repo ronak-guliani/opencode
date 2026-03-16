@@ -17,7 +17,8 @@ import { useTheme, type Theme } from "../../src/theme"
 import { useConnection } from "../../src/store/connection"
 import { useSettings } from "../../src/store/settings"
 import { client, headers as clientHeaders, url as clientUrl } from "../../src/api/client"
-import { bootstrap } from "../../src/api/bootstrap"
+import { connectAndBootstrap } from "../../src/features/connection/connect-and-bootstrap"
+import { toErrorMessage } from "../../src/util/error-message"
 import { serverDisplayName } from "../../src/util/server"
 
 type Method = { type: string; label: string }
@@ -65,16 +66,6 @@ function endpoint(base: string, path: string) {
   return `${base}${path}`
 }
 
-function errorMessage(error: unknown) {
-  if (error instanceof Error) return error.message
-  if (!error) return "Request failed"
-  if (typeof error === "string") return error
-  if (typeof error === "object" && "message" in error && typeof (error as { message: unknown }).message === "string") {
-    return (error as { message: string }).message
-  }
-  return "Request failed"
-}
-
 export default function SettingsScreen() {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
@@ -85,7 +76,6 @@ export default function SettingsScreen() {
   const activeServerUrl = useConnection((s) => s.activeServerUrl)
   const status = useConnection((s) => s.status)
   const serverVersion = useConnection((s) => s.serverVersion)
-  const connect = useConnection((s) => s.connect)
   const removeServer = useConnection((s) => s.removeServer)
   const disconnect = useConnection((s) => s.disconnect)
 
@@ -194,7 +184,7 @@ export default function SettingsScreen() {
         setFlow({
           ...state,
           step: "method",
-          error: errorMessage(authorization.error),
+          error: toErrorMessage(authorization.error),
         })
         return
       }
@@ -241,7 +231,7 @@ export default function SettingsScreen() {
 
       if ("error" in callback && callback.error) {
         setPending(false)
-        setFlowError(errorMessage(callback.error))
+        setFlowError(toErrorMessage(callback.error))
         return
       }
 
@@ -288,7 +278,7 @@ export default function SettingsScreen() {
 
       if ("error" in result) {
         setProviderBusy(null)
-        setProviderError(errorMessage(result.error))
+        setProviderError(toErrorMessage(result.error))
         return
       }
 
@@ -324,7 +314,7 @@ export default function SettingsScreen() {
 
     if ("error" in result && result.error) {
       setPending(false)
-      setFlowError(errorMessage(result.error))
+      setFlowError(toErrorMessage(result.error))
       return
     }
 
@@ -351,7 +341,7 @@ export default function SettingsScreen() {
 
     if ("error" in result && result.error) {
       setPending(false)
-      setFlowError(errorMessage(result.error))
+      setFlowError(toErrorMessage(result.error))
       return
     }
 
@@ -378,24 +368,23 @@ export default function SettingsScreen() {
       setServerBusyAction("connect")
       setServerBusy(targetUrl)
       setServerError(null)
-
       try {
-        await connect(targetUrl)
-        const result = await bootstrap()
+        const result = await connectAndBootstrap({ url: targetUrl })
         if (result.status === "error") {
-          throw new Error(result.error ?? "Bootstrap failed")
+          setServerError(result.error)
+          return false
         }
         router.replace("/(main)/session")
         return true
       } catch (error) {
-        setServerError(errorMessage(error))
+        setServerError(toErrorMessage(error))
         return false
       } finally {
         setServerBusyAction(null)
         setServerBusy(null)
       }
     },
-    [connect, router],
+    [router],
   )
 
   const handleRemoveServer = useCallback(
@@ -417,7 +406,7 @@ export default function SettingsScreen() {
         disconnect()
         router.replace("/connect")
       } catch (error) {
-        setServerError(errorMessage(error))
+        setServerError(toErrorMessage(error))
       } finally {
         setServerBusyAction(null)
         setServerBusy(null)
