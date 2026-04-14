@@ -7,8 +7,16 @@ import { useRequests } from "../store/requests"
 import { useConnection } from "../store/connection"
 import { useDiffs } from "../store/diffs"
 import { markStreamFlush } from "../perf/chat-metrics"
+import { addCrashBreadcrumb } from "../perf/crash-breadcrumbs"
 import { streamFlushPolicy } from "../config/feature-flags"
-import { coalesceDeltaBatch, parseSSE, resolveSessionDiffPayload, type AppEvent, type MessagePartDeltaEvent } from "./events.logic"
+import { telemetry } from "../perf/telemetry"
+import {
+  coalesceDeltaBatch,
+  parseSSE,
+  resolveSessionDiffPayload,
+  type AppEvent,
+  type MessagePartDeltaEvent,
+} from "./events.logic"
 
 // Opt-in debug flag for SSE diagnostics on device:
 // globalThis.__OPENCODE_MOBILE_SSE_DEBUG__ = true
@@ -119,7 +127,6 @@ function applyBatch(events: AppEvent[]) {
           void messages
             .load(event.properties.sessionID, {
               force: true,
-              compact: true,
               limit: IDLE_MESSAGE_RESYNC_LIMIT,
             })
             .catch(() => {
@@ -144,7 +151,12 @@ function applyBatch(events: AppEvent[]) {
             console.log("[sse] part.updated", event.properties.part.id, event.properties.part.type)
           }
           if (DEBUG && event.type === "message.part.delta") {
-            console.log("[sse] part.delta", event.properties.partID, event.properties.field, event.properties.delta.length)
+            console.log(
+              "[sse] part.delta",
+              event.properties.partID,
+              event.properties.field,
+              event.properties.delta.length,
+            )
           }
           messageEvents.push(event)
           break
@@ -223,10 +235,13 @@ function connect(current: Subscriber): Promise<void> {
       const canUseRaf = typeof requestAnimationFrame === "function" && typeof cancelAnimationFrame === "function"
 
       if (waitMs > 0 || !canUseRaf) {
-        timer = setTimeout(() => {
-          timer = null
-          flush()
-        }, waitMs > 0 ? waitMs : EVENT_FLUSH_FALLBACK_MS)
+        timer = setTimeout(
+          () => {
+            timer = null
+            flush()
+          },
+          waitMs > 0 ? waitMs : EVENT_FLUSH_FALLBACK_MS,
+        )
         return
       }
 
@@ -266,6 +281,7 @@ function connect(current: Subscriber): Promise<void> {
         lastProgressAt = Date.now()
         if (DEBUG) console.log("[sse] connection opened")
         useConnection.getState().setStream("connected")
+        telemetry.track("api", "sse:connected")
       }
     }
 
@@ -312,6 +328,7 @@ function connect(current: Subscriber): Promise<void> {
       if (DEBUG) {
         console.warn("[sse] stall watchdog aborting stream after", idleFor, "ms without progress")
       }
+      telemetry.error("api", "sse:stall-abort", { idleMs: idleFor })
       try {
         current.xhr.abort()
       } catch {
@@ -321,6 +338,7 @@ function connect(current: Subscriber): Promise<void> {
 
     xhr.onerror = () => {
       if (DEBUG) console.warn("[sse] xhr error")
+      telemetry.error("api", "sse:error")
       if (watchdog) {
         clearInterval(watchdog)
         watchdog = null
@@ -340,6 +358,7 @@ function connect(current: Subscriber): Promise<void> {
     xhr.onload = () => {
       // Stream ended — server closed connection
       if (DEBUG) console.log("[sse] stream ended (onload)")
+      telemetry.track("api", "sse:stream-ended")
       if (watchdog) {
         clearInterval(watchdog)
         watchdog = null
@@ -402,6 +421,7 @@ export async function subscribe() {
       if (!current.active) break
       useConnection.getState().setStream("reconnecting")
       if (DEBUG) console.warn("[sse] reconnecting in", delay, "ms:", e)
+      telemetry.track("api", "sse:reconnecting", { delayMs: delay })
       await sleep(delay, () => current.active)
       delay = Math.min(delay * 2, 30000)
     }

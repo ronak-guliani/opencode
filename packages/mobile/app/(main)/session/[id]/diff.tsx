@@ -1,13 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import {
-  FlatList,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native"
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from "react"
+import { Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native"
+import { FlashList } from "@shopify/flash-list"
 import { useLocalSearchParams, useRouter } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import Feather from "@expo/vector-icons/Feather"
@@ -21,6 +14,7 @@ import { resolveDiffLineCounts } from "../../../../src/features/diff/counts"
 import { synthesizeSessionDiff } from "../../../../src/features/diff/synthetic"
 import type { DiffLine, SessionFileDiff } from "../../../../src/features/diff/types"
 import { useSessionPartsMap } from "../../../../src/api/hooks"
+import { resolveTurnDiffs } from "../../../../src/components/chat/diff-ui-logic"
 
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
 
@@ -43,15 +37,7 @@ function asNumber(value: unknown) {
 }
 
 function resolveFilePath(diff: Record<string, unknown>) {
-  const candidates = [
-    diff.file,
-    diff.path,
-    diff.filePath,
-    diff.filepath,
-    diff.relativePath,
-    diff.filename,
-    diff.name,
-  ]
+  const candidates = [diff.file, diff.path, diff.filePath, diff.filepath, diff.relativePath, diff.filename, diff.name]
   for (const candidate of candidates) {
     const value = asString(candidate).trim()
     if (value) return value
@@ -142,11 +128,11 @@ export default function SessionDiffScreen() {
   const parsedRowsCacheRef = useRef<Map<string, DiffLine[]>>(new Map())
 
   const session = useSessions((s) => (id ? s.sessions.find((item) => item.id === id) : undefined))
-  const sessionMessages = useMessages((s) => (id ? s.messages[id] ?? [] : []))
+  const sessionMessages = useMessages((s) => (id ? (s.messages[id] ?? []) : []))
   const partsByMessage = useSessionPartsMap(id)
-  const diffs = useDiffs((s) => (id ? s.bySession[id] ?? EMPTY_DIFFS : EMPTY_DIFFS))
-  const loading = useDiffs((s) => (id ? s.loading[id] ?? false : false))
-  const error = useDiffs((s) => (id ? s.error[id] ?? null : null))
+  const diffs = useDiffs((s) => (id ? (s.bySession[id] ?? EMPTY_DIFFS) : EMPTY_DIFFS))
+  const loading = useDiffs((s) => (id ? (s.loading[id] ?? false) : false))
+  const error = useDiffs((s) => (id ? (s.error[id] ?? null) : null))
   const fetchSessionDiff = useDiffs((s) => s.fetchSessionDiff)
 
   useEffect(() => {
@@ -178,7 +164,7 @@ export default function SessionDiffScreen() {
     return result
   }, [sessionMessages])
 
-  const targetTurnMessageID = mode === "turn" ? (turnMessageID || latestUserMessageID) : ""
+  const targetTurnMessageID = mode === "turn" ? turnMessageID || latestUserMessageID : ""
 
   const turnDiffs = useMemo(() => {
     if (mode !== "turn" || !targetTurnMessageID) return EMPTY_DIFFS
@@ -194,9 +180,7 @@ export default function SessionDiffScreen() {
   }, [mode, sessionMessages, targetTurnMessageID])
 
   const apiDiffs = useMemo(() => {
-    const normalized = diffs
-      .map((item) => normalizeDiffEntry(item))
-      .filter((item): item is SessionFileDiff => !!item)
+    const normalized = diffs.map((item) => normalizeDiffEntry(item)).filter((item): item is SessionFileDiff => !!item)
     return dedupeDiffs(normalized)
   }, [diffs])
 
@@ -241,8 +225,14 @@ export default function SessionDiffScreen() {
     }
   }, [mode, partsByMessage, sessionMessages])
 
-  const sessionDiffsMerged = useMemo(() => dedupeDiffs([...apiDiffs, ...syntheticSessionDiffs]), [apiDiffs, syntheticSessionDiffs])
-  const turnDiffsMerged = useMemo(() => dedupeDiffs([...normalizedTurnDiffs, ...syntheticTurnDiffs]), [normalizedTurnDiffs, syntheticTurnDiffs])
+  const sessionDiffsMerged = useMemo(
+    () => dedupeDiffs([...apiDiffs, ...syntheticSessionDiffs]),
+    [apiDiffs, syntheticSessionDiffs],
+  )
+  const turnDiffsMerged = useMemo(
+    () => dedupeDiffs(resolveTurnDiffs(normalizedTurnDiffs, syntheticTurnDiffs)),
+    [normalizedTurnDiffs, syntheticTurnDiffs],
+  )
   const safeDiffs = mode === "turn" ? turnDiffsMerged : sessionDiffsMerged
 
   const summaryFromDiffs = useMemo(() => computeSummary(safeDiffs), [safeDiffs])
@@ -329,17 +319,33 @@ export default function SessionDiffScreen() {
                 {item.file}
               </Text>
               <View style={styles.fileMeta}>
-                <StatusBadge status={statusOf(item)} />
+                <StatusBadge
+                  status={statusOf(item)}
+                  successColor={theme.colors.success}
+                  errorColor={theme.colors.error}
+                  tertiaryColor={theme.colors.textTertiary}
+                />
                 <Text style={[styles.fileCountPlus, { color: theme.colors.success }]}>+{item.additions}</Text>
                 <Text style={[styles.fileCountMinus, { color: theme.colors.error }]}>-{item.deletions}</Text>
               </View>
             </View>
-            <FeatherIcon name={isExpanded ? "chevron-up" : "chevron-down"} size={16} color={theme.colors.textTertiary} />
+            <FeatherIcon
+              name={isExpanded ? "chevron-up" : "chevron-down"}
+              size={16}
+              color={theme.colors.textTertiary}
+            />
           </Pressable>
           {isExpanded ? (
             <View style={[styles.rowsWrap, { borderTopColor: theme.colors.borderSubtle }]}>
               {visibleRows.map((line, index) => (
-                <DiffLineRow key={`${item.file}:${index}`} line={line} />
+                <DiffLineRow
+                  key={`${item.file}:${index}`}
+                  line={line}
+                  successColor={theme.colors.success}
+                  errorColor={theme.colors.error}
+                  tertiaryColor={theme.colors.textTertiary}
+                  textColor={theme.colors.text}
+                />
               ))}
               {remaining > 0 ? (
                 <Pressable
@@ -360,7 +366,22 @@ export default function SessionDiffScreen() {
         </View>
       )
     },
-    [expanded, getParsedRows, lineCap, loadMore, theme.colors.border, theme.colors.error, theme.colors.success, theme.colors.surface, theme.colors.text, theme.colors.textTertiary, theme.colors.borderSubtle, theme.colors.surfaceRaised, theme.colors.textSecondary, toggleFile],
+    [
+      expanded,
+      getParsedRows,
+      lineCap,
+      loadMore,
+      theme.colors.border,
+      theme.colors.error,
+      theme.colors.success,
+      theme.colors.surface,
+      theme.colors.text,
+      theme.colors.textTertiary,
+      theme.colors.borderSubtle,
+      theme.colors.surfaceRaised,
+      theme.colors.textSecondary,
+      toggleFile,
+    ],
   )
 
   if (!id) return null
@@ -388,19 +409,44 @@ export default function SessionDiffScreen() {
           </View>
         </View>
         <View style={styles.chips}>
-          <SummaryChip label="files" value={`${summary.files}`} />
-          <SummaryChip label="added" value={`+${summary.additions}`} valueColor={theme.colors.success} />
-          <SummaryChip label="removed" value={`-${summary.deletions}`} valueColor={theme.colors.error} />
+          <SummaryChip
+            label="files"
+            value={`${summary.files}`}
+            borderColor={theme.colors.border}
+            backgroundColor={theme.colors.surface}
+            textColor={theme.colors.text}
+            tertiaryColor={theme.colors.textTertiary}
+          />
+          <SummaryChip
+            label="added"
+            value={`+${summary.additions}`}
+            valueColor={theme.colors.success}
+            borderColor={theme.colors.border}
+            backgroundColor={theme.colors.surface}
+            textColor={theme.colors.text}
+            tertiaryColor={theme.colors.textTertiary}
+          />
+          <SummaryChip
+            label="removed"
+            value={`-${summary.deletions}`}
+            valueColor={theme.colors.error}
+            borderColor={theme.colors.border}
+            backgroundColor={theme.colors.surface}
+            textColor={theme.colors.text}
+            tertiaryColor={theme.colors.textTertiary}
+          />
         </View>
       </View>
 
-      <FlatList
+      <FlashList
         data={filteredDiffs}
         renderItem={renderFile}
-        keyExtractor={(item) => item.file}
+        keyExtractor={diffKeyExtractor}
         ListHeaderComponent={
           <View style={styles.listHeader}>
-            <View style={[styles.searchWrap, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
+            <View
+              style={[styles.searchWrap, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
+            >
               <FeatherIcon name="search" size={14} color={theme.colors.textTertiary} />
               <TextInput
                 style={[styles.searchInput, { color: theme.colors.text }]}
@@ -421,10 +467,16 @@ export default function SessionDiffScreen() {
                       : "No file changes in this session."
                     : "No files match your search."}
                 </Text>
-                {mode === "session" && error ? <Text style={[styles.emptyMeta, { color: theme.colors.error }]}>{error}</Text> : null}
+                {mode === "session" && error ? (
+                  <Text style={[styles.emptyMeta, { color: theme.colors.error }]}>{error}</Text>
+                ) : null}
                 {mode === "session" && error ? (
                   <Pressable
-                    style={({ pressed }) => [styles.retry, pressed && styles.pressed, { borderColor: theme.colors.border }]}
+                    style={({ pressed }) => [
+                      styles.retry,
+                      pressed && styles.pressed,
+                      { borderColor: theme.colors.border },
+                    ]}
                     onPress={onRefresh}
                   >
                     <Text style={[styles.retryText, { color: theme.colors.textSecondary }]}>Retry</Text>
@@ -444,36 +496,63 @@ export default function SessionDiffScreen() {
   )
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const theme = useTheme()
-  const color = status === "added" ? theme.colors.success : status === "deleted" ? theme.colors.error : theme.colors.textTertiary
+const StatusBadge = memo(function StatusBadge({
+  status,
+  successColor,
+  errorColor,
+  tertiaryColor,
+}: {
+  status: string
+  successColor: string
+  errorColor: string
+  tertiaryColor: string
+}) {
+  const color = status === "added" ? successColor : status === "deleted" ? errorColor : tertiaryColor
   return (
     <View style={[styles.statusBadge, { borderColor: color }]}>
       <Text style={[styles.statusText, { color }]}>{status}</Text>
     </View>
   )
-}
+})
 
-function SummaryChip({
+const SummaryChip = memo(function SummaryChip({
   label,
   value,
   valueColor,
+  borderColor,
+  backgroundColor,
+  textColor,
+  tertiaryColor,
 }: {
   label: string
   value: string
   valueColor?: string
+  borderColor: string
+  backgroundColor: string
+  textColor: string
+  tertiaryColor: string
 }) {
-  const theme = useTheme()
   return (
-    <View style={[styles.summaryChip, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
-      <Text style={[styles.summaryValue, { color: valueColor ?? theme.colors.text }]}>{value}</Text>
-      <Text style={[styles.summaryLabel, { color: theme.colors.textTertiary }]}>{label}</Text>
+    <View style={[styles.summaryChip, { borderColor, backgroundColor }]}>
+      <Text style={[styles.summaryValue, { color: valueColor ?? textColor }]}>{value}</Text>
+      <Text style={[styles.summaryLabel, { color: tertiaryColor }]}>{label}</Text>
     </View>
   )
-}
+})
 
-function DiffLineRow({ line }: { line: DiffLine }) {
-  const theme = useTheme()
+const DiffLineRow = memo(function DiffLineRow({
+  line,
+  successColor,
+  errorColor,
+  tertiaryColor,
+  textColor,
+}: {
+  line: DiffLine
+  successColor: string
+  errorColor: string
+  tertiaryColor: string
+  textColor: string
+}) {
   const rowStyle = [
     styles.row,
     line.type === "added"
@@ -484,23 +563,23 @@ function DiffLineRow({ line }: { line: DiffLine }) {
           ? styles.metaRow
           : null,
   ]
-  const textColor =
+  const color =
     line.type === "added"
-      ? theme.colors.success
+      ? successColor
       : line.type === "removed"
-        ? theme.colors.error
+        ? errorColor
         : line.type === "meta"
-          ? theme.colors.textTertiary
-          : theme.colors.text
+          ? tertiaryColor
+          : textColor
 
   return (
     <View style={rowStyle}>
-      <Text style={[styles.lineNo, { color: theme.colors.textTertiary }]}>{line.leftLineNo ?? ""}</Text>
-      <Text style={[styles.lineNo, { color: theme.colors.textTertiary }]}>{line.rightLineNo ?? ""}</Text>
-      <Text style={[styles.lineText, { color: textColor }]}>{line.text || " "}</Text>
+      <Text style={[styles.lineNo, { color: tertiaryColor }]}>{line.leftLineNo ?? ""}</Text>
+      <Text style={[styles.lineNo, { color: tertiaryColor }]}>{line.rightLineNo ?? ""}</Text>
+      <Text style={[styles.lineText, { color }]}>{line.text || " "}</Text>
     </View>
   )
-}
+})
 
 function statusOf(diff: SessionFileDiff) {
   if (diff.status) return diff.status
@@ -545,6 +624,10 @@ function safeParseRows(diff: SessionFileDiff): DiffLine[] {
 }
 
 const EMPTY_LINE_ROWS: DiffLine[] = []
+
+function diffKeyExtractor(item: SessionFileDiff) {
+  return item.file
+}
 
 const styles = StyleSheet.create({
   container: {

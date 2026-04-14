@@ -1,4 +1,4 @@
-import { createContext, useContext, useRef, useState, useCallback, type ReactNode } from "react"
+import { createContext, useContext, useRef, useState, useCallback, useMemo, type ReactNode } from "react"
 import { useSharedValue, type SharedValue } from "react-native-reanimated"
 import type { Message } from "@opencode-ai/sdk/client"
 import type { FlashListRef } from "@shopify/flash-list"
@@ -21,30 +21,25 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const messageCount = useSharedValue(0)
   const listRef = useRef<FlashListRef<Message>>(null)
 
-  const setComposerH = useCallback((h: number) => {
-    const next = Math.max(0, Math.round(h))
-    setComposerHState((current) => {
-      // Ignore tiny layout jitter during keyboard transitions to prevent list inset flicker.
-      if (Math.abs(current - next) <= 1) return current
-      composerHeight.value = next
-      return next
-    })
-  }, [composerHeight])
-
-  return (
-    <ChatContext.Provider
-      value={{
-        composerHeight,
-        composerH,
-        setComposerH,
-        listRef,
-        isAtEnd,
-        messageCount,
-      }}
-    >
-      {children}
-    </ChatContext.Provider>
+  const setComposerH = useCallback(
+    (h: number) => {
+      const next = Math.max(0, Math.round(h))
+      setComposerHState((current) => {
+        // Ignore tiny layout jitter during keyboard transitions to prevent list inset flicker.
+        if (Math.abs(current - next) <= 1) return current
+        composerHeight.value = next
+        return next
+      })
+    },
+    [composerHeight],
   )
+
+  const value = useMemo(
+    () => ({ composerHeight, composerH, setComposerH, listRef, isAtEnd, messageCount }),
+    [composerH, composerHeight, isAtEnd, listRef, messageCount, setComposerH],
+  )
+
+  return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>
 }
 
 export function useChat(): ChatContextValue {

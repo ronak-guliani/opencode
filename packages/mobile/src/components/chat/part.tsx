@@ -1,5 +1,5 @@
 import { memo, useState, useCallback, useEffect, useMemo } from "react"
-import { View, Text, Pressable, StyleSheet, Linking, Platform, useWindowDimensions } from "react-native"
+import { View, Text, Pressable, StyleSheet, ScrollView, Linking, Platform, useWindowDimensions } from "react-native"
 import Feather from "@expo/vector-icons/Feather"
 import { LinearGradient } from "expo-linear-gradient"
 import Animated, {
@@ -25,12 +25,13 @@ import type {
   ToolPart,
 } from "@opencode-ai/sdk/client"
 import { useTheme } from "../../theme"
+import { telemetry } from "../../perf/telemetry"
 import { MarkdownRenderer } from "../markdown/renderer"
 import { CodeBlock } from "../markdown/code-block"
 
 type SubtaskPart = Extract<Part, { type: "subtask" }>
 type CompactionPart = Extract<Part, { type: "compaction" }>
-type BlurbAction = "thought" | "created" | "ran" | "explored"
+export type BlurbAction = "thought" | "created" | "ran" | "read"
 export type TodoItem = {
   id: string
   content: string
@@ -49,7 +50,12 @@ type Palette = ReturnType<typeof useTheme>["colors"]
 
 const AnimatedView: any = Animated.View
 const AnimatedLinearGradient: any = Animated.createAnimatedComponent(LinearGradient)
-const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string; style?: unknown }>
+const FeatherIcon = Feather as unknown as React.ComponentType<{
+  name: string
+  size: number
+  color: string
+  style?: unknown
+}>
 const COLLAPSIBLE_LAYOUT = LinearTransition.springify().damping(22).stiffness(260).mass(0.7)
 const COLLAPSIBLE_ENTER = FadeIn.duration(140).easing(Easing.out(Easing.cubic))
 const COLLAPSIBLE_EXIT = FadeOut.duration(110).easing(Easing.in(Easing.cubic))
@@ -57,7 +63,7 @@ const ACTION_WORD: Record<BlurbAction, string> = {
   thought: "Thought about",
   created: "Created",
   ran: "Ran",
-  explored: "Explored",
+  read: "Read",
 }
 const TODO_STATUS_ORDER: Record<string, number> = {
   in_progress: 0,
@@ -70,13 +76,15 @@ const TODO_PRIORITY_ORDER: Record<string, number> = {
   medium: 1,
   low: 2,
 }
-const READ_BLURB_MAX_CHARS = 6_000
+const READ_BLURB_MAX_CHARS = 3_000
+const REASONING_CAP_CHARS = 1_500
 
 type Props = {
   part: Part
   isUser: boolean
   isActive?: boolean
   isStreamingComplete?: boolean
+  isNested?: boolean
   onHydrateMessage?: (messageID: string) => void
 }
 
@@ -85,13 +93,21 @@ export const PartRenderer = memo(function PartRenderer({
   isUser,
   isActive = false,
   isStreamingComplete = true,
+  isNested = false,
   onHydrateMessage,
 }: Props) {
   switch (part.type) {
     case "text":
       return <TextPartView part={part} isUser={isUser} isStreamingComplete={isStreamingComplete} />
     case "reasoning":
-      return <ReasoningPartView part={part} isActive={isActive} isStreamingComplete={isStreamingComplete} />
+      return (
+        <ReasoningPartView
+          part={part}
+          isActive={isActive}
+          isStreamingComplete={isStreamingComplete}
+          isNested={isNested}
+        />
+      )
     case "tool":
       return <ToolPartView part={part} isActive={isActive} onHydrateMessage={onHydrateMessage} />
     case "file":
@@ -117,7 +133,15 @@ export const PartRenderer = memo(function PartRenderer({
   }
 })
 
-function TextPartView({ part, isUser, isStreamingComplete }: { part: TextPart; isUser: boolean; isStreamingComplete: boolean }) {
+function TextPartView({
+  part,
+  isUser,
+  isStreamingComplete,
+}: {
+  part: TextPart
+  isUser: boolean
+  isStreamingComplete: boolean
+}) {
   const theme = useTheme()
   if (!part.text) return null
 
@@ -128,7 +152,7 @@ function TextPartView({ part, isUser, isStreamingComplete }: { part: TextPart; i
   return <MarkdownRenderer isComplete={isStreamingComplete}>{part.text}</MarkdownRenderer>
 }
 
-function BlurbRow({
+export function BlurbRow({
   label,
   action,
   isActive = false,
@@ -146,15 +170,13 @@ function BlurbRow({
   const theme = useTheme()
   const { width: screenWidth } = useWindowDimensions()
   const color = blurbActionColor(action, theme.colors)
-  const verb = ACTION_WORD[action]
-  const lower = label.toLowerCase()
-  const lowerVerb = verb.toLowerCase()
   const shimmerX = useSharedValue(-screenWidth)
   const activeProgress = useSharedValue(isActive ? 1 : 0)
-  const subject =
-    lower.startsWith(lowerVerb) && label.length > verb.length
-      ? label.slice(verb.length).trimStart()
-      : label
+
+  // Extract verb + subject from label.  If the label already starts with a
+  // recognized verb (e.g. "Edited list.tsx"), use that verb directly instead
+  // of the generic ACTION_WORD for the action — avoids "Created Edited …".
+  const { verb, subject } = splitVerbSubject(label, action)
 
   useEffect(() => {
     activeProgress.value = withTiming(isActive ? 1 : 0, {
@@ -231,12 +253,16 @@ function BlurbRow({
         <Text style={styles.collapsibleLabel} numberOfLines={1}>
           <Text style={[styles.collapsibleKeyword, { color }]}>{verb}</Text>
           {subject ? (
-            <Text style={[styles.collapsibleSubject, { color: isActive ? theme.colors.text : theme.colors.textSecondary }]}>
+            <Text
+              style={[styles.collapsibleSubject, { color: isActive ? theme.colors.text : theme.colors.textSecondary }]}
+            >
               {" "}
               {subject}
             </Text>
           ) : (
-            <Text style={[styles.collapsibleSubject, { color: isActive ? theme.colors.text : theme.colors.textSecondary }]}>
+            <Text
+              style={[styles.collapsibleSubject, { color: isActive ? theme.colors.text : theme.colors.textSecondary }]}
+            >
               {label}
             </Text>
           )}
@@ -253,12 +279,14 @@ function BlurbRow({
               ]}
             >
               <View style={[styles.liveBadgeDot, { backgroundColor: color }]} />
-              <Text style={[styles.liveBadgeText, { color }]}>Live</Text>
             </View>
           ) : null}
           {showChevron ? (
             <View style={styles.collapsibleChevronSlot}>
-              <CollapsibleChevron expanded={expanded} color={isActive ? theme.colors.textSecondary : theme.colors.textTertiary} />
+              <CollapsibleChevron
+                expanded={expanded}
+                color={isActive ? theme.colors.textSecondary : theme.colors.textTertiary}
+              />
             </View>
           ) : null}
         </View>
@@ -267,13 +295,7 @@ function BlurbRow({
   )
 }
 
-function CollapsibleContent({
-  children,
-  style,
-}: {
-  children: React.ReactNode
-  style?: unknown
-}) {
+function CollapsibleContent({ children, style }: { children: React.ReactNode; style?: unknown }) {
   const theme = useTheme()
 
   return (
@@ -299,20 +321,30 @@ function ReasoningPartView({
   part,
   isActive = false,
   isStreamingComplete,
+  isNested = false,
 }: {
   part: ReasoningPart
   isActive?: boolean
   isStreamingComplete: boolean
+  isNested?: boolean
 }) {
+  const theme = useTheme()
   const [expanded, setExpanded] = useState(false)
+  const [showFull, setShowFull] = useState(false)
   const text = part.text?.trim()
   if (!text) return null
+
+  const capped = !showFull && text.length > REASONING_CAP_CHARS
+  const visible = capped ? text.slice(0, REASONING_CAP_CHARS) : text
 
   const toggle = useCallback(() => {
     setExpanded((v) => !v)
   }, [])
 
-  const label = summarizeBlurb("thought", summarizeInline(text, 52))
+  // nested: show first 3 words of reasoning content; standalone: show duration
+  const label = isNested
+    ? thinkingSnippet(text)
+    : `Thought for ${formatThoughtDuration(part.time.start, part.time.end)}`
 
   return (
     <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
@@ -320,8 +352,21 @@ function ReasoningPartView({
       {expanded ? (
         <CollapsibleContent style={styles.reasoningExpanded}>
           <MarkdownRenderer variant="reasoning" isComplete={isStreamingComplete}>
-            {text}
+            {visible}
           </MarkdownRenderer>
+          {capped ? (
+            <Pressable
+              onPress={() => {
+                telemetry.track("ui", "reasoning:showMore", { chars: text.length })
+                setShowFull(true)
+              }}
+              style={styles.reasoningShowMore}
+            >
+              <Text style={[styles.reasoningShowMoreText, { color: theme.colors.link }]}>
+                Show more ({Math.ceil((text.length - REASONING_CAP_CHARS) / 100) * 100}+ chars)
+              </Text>
+            </Pressable>
+          ) : null}
         </CollapsibleContent>
       ) : null}
     </AnimatedView>
@@ -349,21 +394,18 @@ function ToolPartView({
 
   const toggle = useCallback(() => {
     const opening = !expanded
-    if (
-      opening &&
-      status === "completed" &&
-      "outputTruncated" in part.state &&
-      part.state.outputTruncated
-    ) {
+    telemetry.track("ui", opening ? "tool:expand" : "tool:collapse", { tool: toolName })
+    if (opening && status === "completed" && "outputTruncated" in part.state && part.state.outputTruncated) {
       requestHydration()
     }
     setExpanded((v) => !v)
-  }, [expanded, part.state, requestHydration, status])
+  }, [expanded, part.state, requestHydration, status, toolName])
 
   if (isTodoToolPart(part)) return null
 
   const summary = summarizeToolLabel(part, title || toolName, todos)
-  const open = expanded
+  const isRead = summary.action === "read"
+  const open = expanded && !isRead
 
   return (
     <AnimatedView style={styles.collapsibleContainer} layout={COLLAPSIBLE_LAYOUT}>
@@ -372,16 +414,12 @@ function ToolPartView({
         action={summary.action}
         isActive={isActive}
         expanded={open}
-        onPress={toggle}
-        showChevron
+        onPress={isRead ? undefined : toggle}
+        showChevron={!isRead}
       />
       {open ? (
         <CollapsibleContent style={styles.toolExpanded}>
-          <ToolDetailView
-            part={part}
-            action={summary.action}
-            onHydrateMessage={requestHydration}
-          />
+          <ToolDetailView part={part} action={summary.action} onHydrateMessage={requestHydration} />
         </CollapsibleContent>
       ) : null}
     </AnimatedView>
@@ -401,15 +439,26 @@ function ToolDetailView({
   const status = part.state.status
   const elapsed = toolElapsed(part)
   const output =
-    status === "completed" && "output" in part.state && typeof part.state.output === "string"
-      ? part.state.output
-      : ""
+    status === "completed" && "output" in part.state && typeof part.state.output === "string" ? part.state.output : ""
   const truncatedOutput =
     status === "completed" && "outputTruncated" in part.state && typeof part.state.outputTruncated === "boolean"
       ? part.state.outputTruncated
       : false
 
-  const read = action === "explored" && part.tool === "read" && output ? parseReadOutput(output) : null
+  const read = useMemo(() => {
+    if (action !== "read" || part.tool !== "read" || !output) return null
+    return parseReadOutput(output)
+  }, [action, part.tool, output])
+
+  const readCode = useMemo(() => {
+    if (!read?.content) return null
+    return trimOutput(stripReadLineNumbers(read.content), READ_BLURB_MAX_CHARS)
+  }, [read])
+
+  const readLanguage = useMemo(() => {
+    if (!read?.path) return "text"
+    return languageFromPath(read.path)
+  }, [read])
 
   if (action === "ran") {
     const command = toolCommand(part)
@@ -436,7 +485,7 @@ function ToolDetailView({
           ) : null}
           {command ? <View style={[styles.terminalDivider, { borderTopColor: theme.colors.codeBorder }]} /> : null}
           <Text style={[styles.terminalText, { color: theme.colors.codeText }]} selectable>
-            {trimOutput(body, 2600)}
+            {trimOutput(body, 1600)}
           </Text>
         </View>
         <View style={styles.toolFooter}>
@@ -451,27 +500,48 @@ function ToolDetailView({
     )
   }
 
-  if (read?.type === "file" && read.content) {
-    const code = trimOutput(stripReadLineNumbers(read.content), READ_BLURB_MAX_CHARS)
-    const language = languageFromPath(read.path)
-    return (
-      <View style={styles.toolSection}>
-        {read.path ? (
-          <Text style={[styles.exploredPath, { color: theme.colors.textTertiary }]} numberOfLines={1}>
-            {read.path}
-          </Text>
-        ) : null}
-        <CodeBlock code={code} language={language} />
-        <View style={styles.toolFooter}>
-          {elapsed ? <Text style={[styles.toolMeta, { color: theme.colors.textTertiary }]}>{elapsed}</Text> : null}
-          {truncatedOutput ? (
+  if (action === "read" && part.tool === "read" && output) {
+    if (read?.type === "file" && readCode) {
+      return (
+        <View style={styles.toolSection}>
+          {read.path ? (
+            <Text style={[styles.exploredPath, { color: theme.colors.textTertiary }]} numberOfLines={1}>
+              {read.path}
+            </Text>
+          ) : null}
+          <CodeBlock code={readCode} language={readLanguage} />
+          <View style={styles.toolFooter}>
+            {elapsed ? <Text style={[styles.toolMeta, { color: theme.colors.textTertiary }]}>{elapsed}</Text> : null}
+            {truncatedOutput ? (
+              <Pressable onPress={onHydrateMessage} style={styles.truncatedHintWrap}>
+                <Text style={[styles.truncatedHint, { color: theme.colors.link }]}>Load full output</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      )
+    }
+
+    if (!read && truncatedOutput) {
+      return (
+        <View style={styles.toolSection}>
+          <View
+            style={[
+              styles.toolCard,
+              { backgroundColor: theme.colors.surfaceRaised, borderColor: theme.colors.borderSubtle },
+            ]}
+          >
+            <Text style={[styles.infoBody, { color: theme.colors.textTertiary }]}>Loading file contents...</Text>
+          </View>
+          <View style={styles.toolFooter}>
+            {elapsed ? <Text style={[styles.toolMeta, { color: theme.colors.textTertiary }]}>{elapsed}</Text> : null}
             <Pressable onPress={onHydrateMessage} style={styles.truncatedHintWrap}>
               <Text style={[styles.truncatedHint, { color: theme.colors.link }]}>Load full output</Text>
             </Pressable>
-          ) : null}
+          </View>
         </View>
-      </View>
-    )
+      )
+    }
   }
 
   const content =
@@ -496,7 +566,7 @@ function ToolDetailView({
           ]}
           selectable
         >
-          {trimOutput(content || "No details available", 2200)}
+          {trimOutput(content || "No details available", 1600)}
         </Text>
       </View>
       <View style={styles.toolFooter}>
@@ -545,11 +615,15 @@ export function TodoPanel({
 
   return (
     <View style={styles.todoPanel}>
-      <View style={styles.todoHead}>
+      <Pressable
+        style={styles.todoHead}
+        onPress={onToggle}
+        disabled={!onToggle}
+        accessibilityRole={onToggle ? "button" : undefined}
+        accessibilityLabel={onToggle ? (expanded ? "Collapse todos" : "Expand todos") : undefined}
+      >
         <View style={styles.todoHeadText}>
-          <Text style={[styles.todoSummary, { color: theme.colors.text }]}>
-            {completedSummary}
-          </Text>
+          <Text style={[styles.todoSummary, { color: theme.colors.text }]}>{completedSummary}</Text>
           {live ? (
             <View
               style={[
@@ -566,20 +640,20 @@ export function TodoPanel({
           ) : null}
         </View>
         {onToggle ? (
-          <Pressable onPress={onToggle} hitSlop={8} accessibilityRole="button" accessibilityLabel={expanded ? "Collapse todos" : "Expand todos"}>
-            <FeatherIcon name={expanded ? "chevron-up" : "chevron-down"} size={18} color={theme.colors.textTertiary} />
-          </Pressable>
+          <FeatherIcon name={expanded ? "chevron-up" : "chevron-down"} size={18} color={theme.colors.textTertiary} />
         ) : null}
-      </View>
+      </Pressable>
 
       {!expanded ? null : snapshot.todos.length === 0 ? (
         <Text style={[styles.todoEmpty, { color: theme.colors.textTertiary }]}>No todos yet</Text>
       ) : (
-        <View style={styles.todoList}>
-          {snapshot.todos.map((todo) => (
-            <TodoRow key={todo.id} todo={todo} />
-          ))}
-        </View>
+        <ScrollView style={styles.todoScroll} nestedScrollEnabled>
+          <View style={styles.todoList}>
+            {snapshot.todos.map((todo) => (
+              <TodoRow key={todo.id} todo={todo} />
+            ))}
+          </View>
+        </ScrollView>
       )}
     </View>
   )
@@ -607,7 +681,6 @@ function TodoRow({ todo }: { todo: TodoItem }) {
       >
         {todo.content}
       </Text>
-      <Text style={[styles.todoState, { color }]}>{todoStatusLabel(todo.status)}</Text>
     </View>
   )
 }
@@ -833,6 +906,37 @@ function CollapsibleChevron({ expanded, color }: { expanded: boolean; color: str
   )
 }
 
+const VERB_RE = /^(Thought (?:for|about)|Created|Edited|Ran|Read)\s+/i
+
+function splitVerbSubject(label: string, action: BlurbAction) {
+  const match = label.match(VERB_RE)
+  if (match) return { verb: match[1], subject: label.slice(match[0].length) }
+  return { verb: ACTION_WORD[action], subject: label }
+}
+
+function thinkingSnippet(text: string) {
+  // first 3 words of the reasoning text, max ~32 chars
+  const words = text.replace(/\s+/g, " ").trim().split(" ")
+  const snippet = words.slice(0, 3).join(" ")
+  return snippet.length > 32 ? `${snippet.slice(0, 29)}…` : snippet
+}
+
+function fileBasename(value: string) {
+  // strip any path separators, return just the filename portion
+  const trimmed = value.trim()
+  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"))
+  return slash >= 0 ? trimmed.slice(slash + 1) : trimmed
+}
+
+function formatThoughtDuration(start: number, end?: number) {
+  const ms = (end ?? Date.now()) - start
+  const secs = Math.round(ms / 1000)
+  if (secs < 60) return `${secs}s`
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return s === 0 ? `${m}m` : `${m}m ${s}s`
+}
+
 function short(value: string) {
   if (value.length <= 32) return value
   return `${value.slice(0, 16)}...${value.slice(-8)}`
@@ -849,14 +953,21 @@ function defaultToolSubject(tool: string) {
   const normalized = tool.toLowerCase()
   if (normalized === "todowrite" || normalized === "todoread") return "todo list"
   if (normalized.includes("glob") || normalized.includes("list") || normalized.includes("ls")) return "project files"
-  if (normalized.includes("bash") || normalized.includes("shell") || normalized.includes("command")) return "terminal command"
-  if (normalized.includes("grep") || normalized.includes("find") || normalized.includes("search")) return "relevant matches"
+  if (normalized.includes("bash") || normalized.includes("shell") || normalized.includes("command"))
+    return "terminal command"
+  if (normalized.includes("grep") || normalized.includes("find") || normalized.includes("search"))
+    return "relevant matches"
   if (normalized.includes("fetch") || normalized.includes("web")) return "web results"
   if (normalized.includes("read") || normalized.includes("cat")) return "file contents"
-  if (normalized.includes("patch") || normalized.includes("edit") || normalized.includes("write")) return "project changes"
+  if (normalized.includes("patch") || normalized.includes("edit") || normalized.includes("write"))
+    return "project changes"
   if (normalized.includes("task")) return "delegated task"
   if (normalized.includes("question")) return "a clarification"
   return tool
+}
+
+function isEditTool(tool: string) {
+  return /(edit|apply_patch|multiedit|sed|patch)/.test(tool.toLowerCase())
 }
 
 function summarizeToolLabel(part: ToolPart, title: string, todos: TodoItem[]) {
@@ -867,6 +978,19 @@ function summarizeToolLabel(part: ToolPart, title: string, todos: TodoItem[]) {
   if (known) return { label: capitalizeInline(raw), action: known }
   const action = inferToolAction(part.tool, normalizedTitle, todos)
   const subject = part.tool === "todowrite" || part.tool === "todoread" ? "todo list" : raw
+  // for read-action tools, show just the filename
+  if (action === "read") {
+    const name = fileBasename(subject)
+    return { label: `Read ${name || subject}`, action }
+  }
+  // for created-action tools, distinguish "Edited" vs "Created" and show filename
+  if (action === "created") {
+    const verb = isEditTool(part.tool) ? "Edited" : "Created"
+    const name = fileBasename(subject)
+    // only show filename when subject looks like a path (contains / or \)
+    const display = subject.includes("/") || subject.includes("\\") ? name : summarizeInline(subject, 52)
+    return { label: `${verb} ${display}`, action }
+  }
   return { label: summarizeBlurb(action, summarizeInline(subject, 52)), action }
 }
 
@@ -878,10 +1002,10 @@ function summarizeBlurb(action: BlurbAction, subject: string) {
 
 function parseBlurbAction(value: string): BlurbAction | null {
   const normalized = value.trim().toLowerCase()
-  if (normalized.startsWith("thought about ")) return "thought"
+  if (normalized.startsWith("thought about ") || normalized.startsWith("thought for ")) return "thought"
   if (normalized.startsWith("created ")) return "created"
   if (normalized.startsWith("ran ")) return "ran"
-  if (normalized.startsWith("explored ")) return "explored"
+  if (normalized.startsWith("read ") || normalized.startsWith("explored ")) return "read"
   return null
 }
 
@@ -898,14 +1022,289 @@ function inferToolAction(tool: string, title: string, todos: TodoItem[]): BlurbA
     return "ran"
   }
 
-  if (normalizedTool === "todoread") return "explored"
+  if (normalizedTool === "todoread") return "read"
   if (/(write|edit|patch|apply_patch|multiedit|create|mkdir|mv|cp|save|rename)/.test(normalizedTool)) return "created"
   if (/(bash|shell|command|task|batch|question|plan)/.test(normalizedTool)) return "ran"
-  if (/(read|cat|glob|list|ls|grep|find|search|fetch|web|code|lsp)/.test(normalizedTool)) return "explored"
+  if (/(read|cat|glob|list|ls|grep|find|search|fetch|web|code|lsp)/.test(normalizedTool)) return "read"
   if (/^(created?|updated?|edited?|wrote|saved)\b/.test(normalizedTitle)) return "created"
   if (/^(ran|running|executed|launched)\b/.test(normalizedTitle)) return "ran"
-  if (/^(explored|searched|read|listed|fetched)\b/.test(normalizedTitle)) return "explored"
+  if (/^(explored|searched|read|listed|fetched)\b/.test(normalizedTitle)) return "read"
   return "thought"
+}
+
+export function inferPartAction(part: Part): BlurbAction | null {
+  if (part.type === "text" || part.type === "step-start" || part.type === "step-finish") return null
+  if (part.type === "reasoning" || part.type === "subtask") return "thought"
+  if (part.type === "file" || part.type === "snapshot" || part.type === "patch") return "created"
+  if (part.type === "agent" || part.type === "retry" || part.type === "compaction") return "ran"
+  if (part.type === "tool") {
+    const title = "title" in part.state && typeof part.state.title === "string" ? part.state.title : ""
+    const todos = isTodoToolPart(part) ? extractToolTodos(part) : []
+    return summarizeToolLabel(part, title, todos).action
+  }
+  return null
+}
+
+const GROUP_SUBJECT: Record<BlurbAction, string> = {
+  read: "files",
+  created: "files",
+  ran: "commands",
+  thought: "topics",
+}
+
+// Short text/step-start/step-finish parts between blurbs don't break a group
+const SHORT_TEXT_THRESHOLD = 600
+const MEDIUM_TEXT_THRESHOLD = 2000
+const RICH_TEXT_RE = /^#{1,4}\s|```|^\s*[-*]\s/m
+
+export type PartItem =
+  | { kind: "single"; part: Part }
+  | { kind: "group"; action: BlurbAction; parts: Part[]; all: Part[] }
+
+export function groupConsecutiveParts(parts: Part[], activePartID: string): PartItem[] {
+  // Two-pass grouping:
+  // Pass 1 — tag each part as blurb, bridge, skip, or break
+  // Pass 2 — merge consecutive blurb runs (with bridged gaps) into groups
+
+  const tagged: { part: Part; tag: "blurb" | "bridge" | "break" }[] = []
+
+  for (const part of parts) {
+    if (part.type === "step-start" || part.type === "step-finish") continue
+    if (activePartID && part.id === activePartID) {
+      tagged.push({ part, tag: "break" })
+      continue
+    }
+    const action = inferPartAction(part)
+    if (action !== null) {
+      tagged.push({ part, tag: "blurb" })
+      continue
+    }
+    // text parts between blurbs can bridge — mark tentatively,
+    // pass 2 will decide whether they actually bridge or break.
+    // Short text (< 600 chars) always bridges.
+    // Medium text (600-2000 chars) bridges if it has no rich content (headers, code blocks, lists).
+    if (part.type === "text") {
+      const len = part.text?.trim().length ?? 0
+      if (len < SHORT_TEXT_THRESHOLD || (len < MEDIUM_TEXT_THRESHOLD && !RICH_TEXT_RE.test(part.text ?? ""))) {
+        tagged.push({ part, tag: "bridge" })
+        continue
+      }
+    }
+    tagged.push({ part, tag: "break" })
+  }
+
+  // Pass 2 — sweep and collect runs of blurbs (allowing bridge gaps between them)
+  const result: PartItem[] = []
+  let i = 0
+
+  while (i < tagged.length) {
+    const entry = tagged[i]
+
+    if (entry.tag !== "blurb") {
+      result.push({ kind: "single", part: entry.part })
+      i++
+      continue
+    }
+
+    // Start of a potential blurb run — collect all blurbs and bridges
+    const blurbs: Part[] = [entry.part]
+    const all: Part[] = [entry.part]
+    i++
+
+    while (i < tagged.length) {
+      if (tagged[i].tag === "blurb") {
+        blurbs.push(tagged[i].part)
+        all.push(tagged[i].part)
+        i++
+        continue
+      }
+
+      if (tagged[i].tag === "bridge") {
+        // lookahead: only bridge if a blurb follows before a break
+        let j = i
+        const pending: Part[] = []
+        while (j < tagged.length && tagged[j].tag === "bridge") {
+          pending.push(tagged[j].part)
+          j++
+        }
+        if (j < tagged.length && tagged[j].tag === "blurb") {
+          // confirmed bridge — absorb pending into group
+          all.push(...pending)
+          i = j
+          continue
+        }
+        // bridge leads to break or end — stop run, leave pending for individual emission
+        break
+      }
+
+      // break — stop the run
+      break
+    }
+
+    if (blurbs.length < 2) {
+      for (const p of all) result.push({ kind: "single", part: p })
+    } else {
+      result.push({ kind: "group", action: pickDominantAction(blurbs), parts: blurbs, all })
+    }
+  }
+
+  if (__DEV__) {
+    const blurbCount = tagged.filter((t) => t.tag === "blurb").length
+    const groupCount = result.filter((r) => r.kind === "group").length
+    if (blurbCount >= 2 && groupCount === 0) {
+      const trace = tagged.map((t, idx) => {
+        const extra =
+          t.part.type === "text"
+            ? ` len=${(t.part as TextPart).text?.length ?? 0}`
+            : t.part.type === "tool"
+              ? ` tool=${(t.part as ToolPart).tool}`
+              : ""
+        return `[${idx}] ${t.tag} type=${t.part.type}${extra} id=${t.part.id.slice(0, 16)}`
+      })
+      console.warn(`[groupParts] ${blurbCount} blurbs but 0 groups!\n${trace.join("\n")}`)
+    }
+  }
+
+  return result
+}
+
+function pickDominantAction(blurbs: Part[]): BlurbAction {
+  const counts: Record<BlurbAction, number> = { created: 0, ran: 0, read: 0, thought: 0 }
+  for (const p of blurbs) {
+    const a = inferPartAction(p)
+    if (a) counts[a]++
+  }
+  let best: BlurbAction = "created"
+  let max = 0
+  for (const [action, count] of Object.entries(counts) as [BlurbAction, number][]) {
+    if (count > max) {
+      max = count
+      best = action as BlurbAction
+    }
+  }
+  return best
+}
+
+export function GroupedBlurb({
+  action,
+  parts,
+  all,
+  isStreamingComplete,
+  onHydrateMessage,
+}: {
+  action: BlurbAction
+  parts: Part[]
+  all: Part[]
+  isStreamingComplete: boolean
+  onHydrateMessage?: (messageID: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const toggle = useCallback(() => setExpanded((v) => !v), [])
+  const label = groupLabel(action, parts)
+
+  return (
+    <AnimatedView layout={COLLAPSIBLE_LAYOUT}>
+      <BlurbRow label={label} action={action} expanded={expanded} onPress={toggle} />
+      {expanded ? (
+        <CollapsibleContent>
+          <View style={styles.nestedGroup}>
+            {all.map((part, idx) => (
+              <PartRenderer
+                key={part.id || `nested:${idx}`}
+                part={part}
+                isUser={false}
+                isActive={false}
+                isNested
+                isStreamingComplete={isStreamingComplete}
+                onHydrateMessage={onHydrateMessage}
+              />
+            ))}
+          </View>
+        </CollapsibleContent>
+      ) : null}
+    </AnimatedView>
+  )
+}
+
+function groupLabel(action: BlurbAction, parts: Part[]): string {
+  const counts: Record<BlurbAction, number> = { created: 0, ran: 0, read: 0, thought: 0 }
+  for (const p of parts) {
+    const a = inferPartAction(p)
+    if (a) counts[a]++
+  }
+  const total = parts.length
+  const dominated = counts[action] / total >= 0.6
+
+  // thought group: sum durations → "Thought for Xm Ys"
+  if (dominated && action === "thought") {
+    const dur = thoughtGroupDuration(parts)
+    return dur ? `Thought for ${dur}` : `Thought about ${counts.thought} topics`
+  }
+
+  // read group: list up to 3 filenames → "Read PLAN.md and index.html"
+  if (dominated && action === "read") {
+    return readGroupLabel(parts)
+  }
+
+  // created group: pick "Edited" vs "Created" based on majority, list filenames
+  if (dominated && action === "created") {
+    return createdGroupLabel(parts)
+  }
+
+  if (dominated) return `${ACTION_WORD[action]} ${counts[action]} ${GROUP_SUBJECT[action]}`
+  const sorted = (Object.entries(counts) as [BlurbAction, number][])
+    .filter(([, n]) => n > 0)
+    .sort(([, a], [, b]) => b - a)
+  if (sorted.length === 1) return `${ACTION_WORD[sorted[0][0]]} ${sorted[0][1]} ${GROUP_SUBJECT[sorted[0][0]]}`
+  return `${total} actions`
+}
+
+function thoughtGroupDuration(parts: Part[]): string | null {
+  let minStart: number | null = null
+  let maxEnd: number | null = null
+  for (const p of parts) {
+    if (p.type !== "reasoning") continue
+    if (minStart === null || p.time.start < minStart) minStart = p.time.start
+    const end = p.time.end ?? null
+    if (end !== null && (maxEnd === null || end > maxEnd)) maxEnd = end
+  }
+  if (minStart === null) return null
+  return formatThoughtDuration(minStart, maxEnd ?? undefined)
+}
+
+function readGroupLabel(parts: Part[]): string {
+  const names: string[] = []
+  for (const p of parts) {
+    if (p.type !== "tool") continue
+    const title = "title" in p.state && typeof p.state.title === "string" ? p.state.title : ""
+    const name = fileBasename(title || p.tool)
+    if (name && !names.includes(name)) names.push(name)
+    if (names.length === 3) break
+  }
+  if (names.length === 0) return `Read ${parts.length} files`
+  if (names.length === 1) return `Read ${names[0]}`
+  if (names.length === 2) return `Read ${names[0]} and ${names[1]}`
+  return `Read ${names[0]}, ${names[1]} and ${names[2]}`
+}
+
+function createdGroupLabel(parts: Part[]): string {
+  let edits = 0
+  let creates = 0
+  const names: string[] = []
+  for (const p of parts) {
+    if (p.type !== "tool") continue
+    if (isEditTool(p.tool)) edits++
+    else creates++
+    const title = "title" in p.state && typeof p.state.title === "string" ? p.state.title : ""
+    const name = fileBasename(title || p.tool)
+    if (name && !names.includes(name)) names.push(name)
+  }
+  const verb = edits >= creates ? "Edited" : "Created"
+  if (names.length === 0) return `${verb} ${parts.length} files`
+  if (names.length === 1) return `${verb} ${names[0]}`
+  if (names.length === 2) return `${verb} ${names[0]} and ${names[1]}`
+  if (names.length === 3) return `${verb} ${names[0]}, ${names[1]} and ${names[2]}`
+  return `${verb} ${names.length} files`
 }
 
 export function isTodoToolPart(part: Part | ToolPart): part is ToolPart {
@@ -977,14 +1376,6 @@ export function resolveLatestTodoSnapshot(parts: Part[]) {
   return null
 }
 
-function todoStatusLabel(status: string) {
-  if (status === "in_progress") return "ACTIVE"
-  if (status === "pending") return "PENDING"
-  if (status === "completed") return "DONE"
-  if (status === "cancelled") return "CANCELLED"
-  return status.toUpperCase()
-}
-
 function todoStatusIcon(status: string) {
   if (status === "in_progress") return "play-circle"
   if (status === "completed") return "check-circle"
@@ -1003,7 +1394,7 @@ function todoStatusColor(status: string, colors: Palette) {
 function blurbActionColor(action: BlurbAction, colors: Palette) {
   if (action === "created") return colors.statusIdle
   if (action === "ran") return colors.accent
-  if (action === "explored") return colors.warning
+  if (action === "read") return colors.warning
   return colors.textSecondary
 }
 
@@ -1039,7 +1430,9 @@ function toolCommand(part: ToolPart) {
     if (typeof description === "string" && description.trim()) return `task ${description.trim()}`
   }
 
-  const firstString = Object.values(input).find((value): value is string => typeof value === "string" && value.trim().length > 0)
+  const firstString = Object.values(input).find(
+    (value): value is string => typeof value === "string" && value.trim().length > 0,
+  )
   if (firstString) return summarizeInline(firstString.trim(), 160)
   return ""
 }
@@ -1052,7 +1445,9 @@ function toolInputPreview(part: ToolPart) {
     .find((value): value is string => typeof value === "string" && value.trim().length > 0)
   if (direct) return direct.trim()
 
-  const first = Object.values(input).find((value): value is string => typeof value === "string" && value.trim().length > 0)
+  const first = Object.values(input).find(
+    (value): value is string => typeof value === "string" && value.trim().length > 0,
+  )
   if (first) return first.trim()
 
   const keys = Object.keys(input)
@@ -1074,8 +1469,15 @@ function parseReadOutput(output: string) {
   return { path, type, content }
 }
 
+const tagPatterns = new Map<string, RegExp>()
+
 function extractTag(value: string, tag: string) {
-  const match = value.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`))
+  let pattern = tagPatterns.get(tag)
+  if (!pattern) {
+    pattern = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`)
+    tagPatterns.set(tag, pattern)
+  }
+  const match = value.match(pattern)
   return match?.[1]?.trim() ?? ""
 }
 
@@ -1093,7 +1495,13 @@ function stripReadLineNumbers(content: string) {
 function languageFromPath(filePath: string) {
   const normalized = filePath.toLowerCase()
   if (normalized.endsWith(".tsx") || normalized.endsWith(".ts")) return "ts"
-  if (normalized.endsWith(".jsx") || normalized.endsWith(".js") || normalized.endsWith(".mjs") || normalized.endsWith(".cjs")) return "js"
+  if (
+    normalized.endsWith(".jsx") ||
+    normalized.endsWith(".js") ||
+    normalized.endsWith(".mjs") ||
+    normalized.endsWith(".cjs")
+  )
+    return "js"
   if (normalized.endsWith(".py")) return "py"
   if (normalized.endsWith(".sh") || normalized.endsWith(".bash") || normalized.endsWith(".zsh")) return "sh"
   if (normalized.endsWith(".json")) return "json"
@@ -1222,6 +1630,14 @@ const styles = StyleSheet.create({
   reasoningExpanded: {
     paddingTop: 2,
   },
+  reasoningShowMore: {
+    paddingTop: 4,
+    paddingBottom: 2,
+  },
+  reasoningShowMoreText: {
+    fontSize: 12,
+    fontWeight: "500",
+  },
   infoLink: {
     fontSize: 12,
     fontWeight: "600",
@@ -1278,6 +1694,9 @@ const styles = StyleSheet.create({
   todoList: {
     gap: 6,
   },
+  todoScroll: {
+    maxHeight: 160,
+  },
   todoItem: {
     flexDirection: "row",
     alignItems: "center",
@@ -1292,12 +1711,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     lineHeight: 17,
-  },
-  todoState: {
-    fontSize: 10,
-    lineHeight: 12,
-    fontWeight: "700",
-    letterSpacing: 0.3,
   },
   todoEmpty: {
     fontSize: 12,
@@ -1375,5 +1788,8 @@ const styles = StyleSheet.create({
   truncatedHint: {
     fontSize: 12,
     fontWeight: "500",
+  },
+  nestedGroup: {
+    paddingLeft: 20,
   },
 })

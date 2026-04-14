@@ -31,6 +31,7 @@ import { ModelPicker } from "../../../../src/components/model-picker"
 import { DisableFadeProvider } from "../../../../src/animation"
 import { markChatFirstPaint, markChatInteractionReady, markChatOpenStart } from "../../../../src/perf/chat-metrics"
 import { addCrashBreadcrumb, readCrashBreadcrumbs } from "../../../../src/perf/crash-breadcrumbs"
+import { telemetry } from "../../../../src/perf/telemetry"
 import { resolveLatestTodoSnapshot } from "../../../../src/components/chat/part"
 
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
@@ -82,9 +83,16 @@ export default function SessionScreen() {
   const wasSeen = id ? seen.current.has(id) : false
   const appStateRef = useRef<AppStateStatus>(AppState.currentState)
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const firstPaintedRef = useRef<string | null>(null)
   const isBusy = sessionStatus?.type === "busy"
+  const isBusyRef = useRef(isBusy)
+  isBusyRef.current = isBusy
+  const pendingCountRef = useRef(pendingRequestCount)
+  pendingCountRef.current = pendingRequestCount
   const shouldShowLoadingState = messages.length === 0 && (loadingMessages || loadedAt === 0)
   const pinnedTodo = useMemo(() => {
+    if (isBusy) return null
+
     let end = -1
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const candidate = messages[i]
@@ -110,7 +118,7 @@ export default function SessionScreen() {
     }
 
     return null
-  }, [messages, partsByMessage])
+  }, [isBusy, messages, partsByMessage])
 
   useEffect(() => {
     if (!shouldShowLoadingState) {
@@ -174,67 +182,59 @@ export default function SessionScreen() {
   }, [fetchProviders])
 
   useEffect(() => {
-    if (id) {
-      addCrashBreadcrumb("session-screen:open", {
-        sessionID: id,
-      })
-      markChatOpenStart(id)
-      select(id)
-      void load(id, { limit: SESSION_OPEN_LIMIT, compact: true, trimToRecent: SESSION_OPEN_LIMIT })
-      addCrashBreadcrumb("session-screen:load", { sessionID: id, limit: SESSION_OPEN_LIMIT })
-      // Mark as seen after a short delay to let initial content animate
-      const timer = setTimeout(() => seen.current.add(id), 1500)
-      const interactionTask = InteractionManager.runAfterInteractions(() => {
-        markChatInteractionReady(id)
-        void refreshRequests()
-        addCrashBreadcrumb("session-screen:interaction-ready", { sessionID: id })
-      })
-      return () => {
-        addCrashBreadcrumb("session-screen:cleanup", { sessionID: id })
-        clearTimeout(timer)
-        interactionTask.cancel()
-      }
-    }
-  }, [id, load, refreshRequests, select])
-
-  useEffect(() => {
     if (!id) return
-    if (!session?.directory || session.directory === directory) return
-    let cancelled = false
+    telemetry.track("session", "session:screen:open", { sessionID: id })
+    addCrashBreadcrumb("session-screen:open", { sessionID: id })
+    markChatOpenStart(id)
+    select(id)
 
-    addCrashBreadcrumb("session-screen:directory-switch:start", {
-      sessionID: id,
-      fromDirectory: directory,
-      toDirectory: session.directory,
-    })
+    // Reset the first-paint ref so it fires again for a new session
+    if (firstPaintedRef.current !== id) firstPaintedRef.current = null
 
-    void switchDirectory(session.directory)
-      .then(() => {
-        if (cancelled) return
-        addCrashBreadcrumb("session-screen:directory-switch:done", {
+    const sessionDir = useSessions.getState().sessions.find((item) => item.id === id)?.directory
+    const needsSwitch = !!sessionDir && sessionDir !== useConnection.getState().directory
+
+    const initSession = async () => {
+      if (needsSwitch) {
+        addCrashBreadcrumb("session-screen:directory-switch:start", {
           sessionID: id,
-          toDirectory: session.directory,
+          fromDirectory: useConnection.getState().directory,
+          toDirectory: sessionDir,
         })
-        // Refresh from the correct directory, but keep render bounded to latest messages.
-        void load(id, { limit: SESSION_OPEN_LIMIT, compact: true, trimToRecent: SESSION_OPEN_LIMIT })
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return
-        addCrashBreadcrumb(
-          "session-screen:directory-switch:error",
-          {
-            sessionID: id,
-            toDirectory: session.directory,
-            message: error instanceof Error ? error.message : String(error),
-          },
-          "warn",
-        )
-      })
-
-    return () => {
-      cancelled = true
+        try {
+          await switchDirectory(sessionDir)
+          addCrashBreadcrumb("session-screen:directory-switch:done", { sessionID: id, toDirectory: sessionDir })
+        } catch (error: unknown) {
+          addCrashBreadcrumb(
+            "session-screen:directory-switch:error",
+            {
+              sessionID: id,
+              toDirectory: sessionDir,
+              message: error instanceof Error ? error.message : String(error),
+            },
+            "warn",
+          )
+        }
+      }
+      void load(id, { limit: SESSION_OPEN_LIMIT, trimToRecent: SESSION_OPEN_LIMIT })
+      addCrashBreadcrumb("session-screen:load", { sessionID: id, limit: SESSION_OPEN_LIMIT })
     }
-  }, [directory, id, load, session?.directory, switchDirectory])
+
+    void initSession()
+
+    const timer = setTimeout(() => seen.current.add(id), 1500)
+    const interactionTask = InteractionManager.runAfterInteractions(() => {
+      markChatInteractionReady(id)
+      void refreshRequests()
+      addCrashBreadcrumb("session-screen:interaction-ready", { sessionID: id })
+    })
+    return () => {
+      telemetry.track("session", "session:screen:cleanup", { sessionID: id })
+      addCrashBreadcrumb("session-screen:cleanup", { sessionID: id })
+      clearTimeout(timer)
+      interactionTask.cancel()
+    }
+  }, [id, load, refreshRequests, select, switchDirectory])
 
   useEffect(() => {
     if (!id) return
@@ -285,9 +285,9 @@ export default function SessionScreen() {
       if (cancelled || appStateRef.current !== "active") return
       if (!shouldPoll) return
 
-      const interval = isBusy
+      const interval = isBusyRef.current
         ? REQUEST_POLL_BUSY_MS
-        : pendingRequestCount > 0
+        : pendingCountRef.current > 0
           ? REQUEST_POLL_PENDING_MS
           : REQUEST_POLL_IDLE_MS
 
@@ -322,7 +322,7 @@ export default function SessionScreen() {
       appStateSubscription.remove()
       clearPollTimer()
     }
-  }, [id, clearPollTimer, isBusy, pendingRequestCount, refreshRequests, stream])
+  }, [id, clearPollTimer, refreshRequests, stream])
 
   useEffect(() => {
     if (!id) return
@@ -331,7 +331,6 @@ export default function SessionScreen() {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
     let unchangedSyncs = 0
-    const baseDelay = isBusy ? MESSAGE_RESYNC_BUSY_MS : MESSAGE_RESYNC_IDLE_MS
 
     const sync = async () => {
       if (cancelled || appStateRef.current !== "active") return
@@ -340,7 +339,7 @@ export default function SessionScreen() {
       const beforeCount = before.messages[id]?.length ?? 0
 
       try {
-        await load(id, { force: true, limit: SESSION_OPEN_LIMIT, compact: true })
+        await load(id, { force: true, limit: SESSION_OPEN_LIMIT })
       } catch {
         // ignore
       }
@@ -355,6 +354,7 @@ export default function SessionScreen() {
       } else {
         unchangedSyncs += 1
       }
+      const baseDelay = isBusyRef.current ? MESSAGE_RESYNC_BUSY_MS : MESSAGE_RESYNC_IDLE_MS
       const delayMultiplier = Math.min(4, 1 + unchangedSyncs)
       const nextDelay = Math.round(baseDelay * delayMultiplier)
       timer = setTimeout(() => {
@@ -368,10 +368,12 @@ export default function SessionScreen() {
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [id, isBusy, load, stream])
+  }, [id, load, stream])
 
   useEffect(() => {
     if (!id || messages.length === 0) return
+    if (firstPaintedRef.current === id) return
+    firstPaintedRef.current = id
     const frame = requestAnimationFrame(() => {
       markChatFirstPaint(id, messages.length)
     })

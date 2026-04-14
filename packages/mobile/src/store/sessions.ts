@@ -3,6 +3,7 @@ import { createOpencodeClient } from "@opencode-ai/sdk/client"
 import type { Project, Session, SessionStatus } from "@opencode-ai/sdk/client"
 import { client, url, headers } from "../api/client"
 import { addCrashBreadcrumb } from "../perf/crash-breadcrumbs"
+import { telemetry } from "../perf/telemetry"
 
 function projectClient(worktree: string) {
   const base = headers()
@@ -62,9 +63,13 @@ export const useSessions = createStore<SessionState>((set, get) => ({
       loading: false,
     }),
 
-  select: (id) => set({ current: id }),
+  select: (id) => {
+    telemetry.track("session", "session:select", { sessionID: id })
+    set({ current: id })
+  },
 
   fetch: async () => {
+    const s = telemetry.span("session", "session:fetch")
     const startAt = Date.now()
     addCrashBreadcrumb("sessions-fetch:start")
     set({ loading: true })
@@ -91,6 +96,7 @@ export const useSessions = createStore<SessionState>((set, get) => ({
         sessionByID[session.id] = session
       }
       set({ projects, sessions: deduped, sessionByID, loading: false })
+      s.end({ projects: projects.length, sessions: deduped.length })
       addCrashBreadcrumb("sessions-fetch:done", {
         projects: projects.length,
         sessions: deduped.length,
@@ -98,6 +104,7 @@ export const useSessions = createStore<SessionState>((set, get) => ({
       })
     } catch {
       set({ loading: false })
+      s.end({ error: true })
       addCrashBreadcrumb(
         "sessions-fetch:error",
         {
@@ -146,14 +153,17 @@ export const useSessions = createStore<SessionState>((set, get) => ({
   },
 
   create: async () => {
+    const s = telemetry.span("session", "session:create")
     const result = await client().session.create()
     if (!result.data) throw new Error("Failed to create session")
     get()._upsert(result.data)
     set({ current: result.data.id })
+    s.end({ sessionID: result.data.id })
     return result.data
   },
 
   archive: async (id) => {
+    telemetry.track("session", "session:archive", { sessionID: id })
     try {
       await client().session.update({
         path: { id },
@@ -173,6 +183,7 @@ export const useSessions = createStore<SessionState>((set, get) => ({
   },
 
   delete: async (id) => {
+    telemetry.track("session", "session:delete", { sessionID: id })
     await client().session.delete({ path: { id } })
     get()._remove(id)
     if (get().current === id) {

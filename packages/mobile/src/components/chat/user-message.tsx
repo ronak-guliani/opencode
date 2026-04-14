@@ -1,4 +1,4 @@
-import { memo } from "react"
+import { memo, useMemo } from "react"
 import { View, Text, StyleSheet } from "react-native"
 import type { Message, Part } from "@opencode-ai/sdk/client"
 import { useMessageParts } from "../../api/hooks"
@@ -13,11 +13,15 @@ export const UserMessage = memo(function UserMessage({ message }: Props) {
   const theme = useTheme()
   const parts = useMessageParts(message.id)
 
-  const text = parts
-    .filter((part): part is Extract<Part, { type: "text" }> => part.type === "text")
-    .map((part) => part.text)
-    .join("")
-  const summary = parts.map(partSummary).filter(Boolean).join("\n")
+  const text = useMemo(
+    () =>
+      parts
+        .filter((part): part is Extract<Part, { type: "text" }> => part.type === "text")
+        .map((part) => part.text)
+        .join(""),
+    [parts],
+  )
+  const summary = useMemo(() => parts.map(partSummary).filter(Boolean).join("\n"), [parts])
 
   return (
     <View style={styles.container}>

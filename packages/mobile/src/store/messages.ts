@@ -7,6 +7,7 @@ import { useSettings } from "./settings"
 import { normalizeServerUrl } from "../util/server"
 import { markChatFirstToken, markStreamLateDelta } from "../perf/chat-metrics"
 import { addCrashBreadcrumb } from "../perf/crash-breadcrumbs"
+import { telemetry } from "../perf/telemetry"
 
 type MessagePartDeltaEvent = {
   type: "message.part.delta"
@@ -43,10 +44,7 @@ type MessageState = {
   hydrated: Record<string, boolean>
   sessionOrder: string[]
   reset: () => void
-  load: (
-    sessionID: string,
-    opts?: { force?: boolean; limit?: number; compact?: boolean; trimToRecent?: number },
-  ) => Promise<void>
+  load: (sessionID: string, opts?: { force?: boolean; limit?: number; trimToRecent?: number }) => Promise<void>
   loadMore: (sessionID: string) => Promise<void>
   prefetch: (sessionIDs: string[], opts?: { limit?: number }) => Promise<void>
   hydrateMessage: (sessionID: string, messageID: string) => Promise<void>
@@ -71,8 +69,8 @@ type CachedSession = {
 
 const MESSAGE_CACHE_TTL_MS = 5 * 60_000
 const PERSISTED_CACHE_TTL_MS = 24 * 60 * 60_000
-const INITIAL_MESSAGE_LIMIT = 60
-const LOAD_MORE_STEP = 80
+const INITIAL_MESSAGE_LIMIT = 6
+const LOAD_MORE_STEP = 20
 const PREFETCH_LIMIT = 12
 const MAX_MESSAGE_LIMIT = 5_000
 const FAST_TRIM_SKIP_CLEANUP_THRESHOLD = 320
@@ -85,6 +83,12 @@ const MAX_PENDING_DELTA_ENTRIES = 1200
 const PENDING_DELTA_TRIM_TARGET = 900
 
 const persistTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+// Synchronous in-process cache — survives Zustand LRU eviction.
+// Keyed by sessionID, holds the same shape as CachedSession.
+// Written whenever entries are applied; read synchronously in load() before
+// touching AsyncStorage, making evicted-session restores instant.
+const memorySessionCache = new Map<string, CachedSession>()
 
 export class SendMessageError extends Error {
   readonly sessionID: string
@@ -373,6 +377,8 @@ export const useMessages = createStore<MessageState>((set, get) => {
           // ignore cache write errors
         })
       lastPersistAt.set(sessionID, Date.now())
+      // Keep fast memory cache in sync with the persisted payload.
+      memorySessionCache.set(sessionID, payload)
     }, delay)
 
     persistTimers.set(sessionID, timer)
@@ -431,6 +437,17 @@ export const useMessages = createStore<MessageState>((set, get) => {
         ...trimStateForLRU(next, sessionID),
       }
     })
+
+    // Mirror to fast synchronous cache so LRU-evicted sessions restore instantly.
+    const saved = Date.now()
+    const capped =
+      entries.length > MAX_PERSISTED_MESSAGES_PER_SESSION ? entries.slice(-MAX_PERSISTED_MESSAGES_PER_SESSION) : entries
+    memorySessionCache.set(sessionID, {
+      savedAt: saved,
+      oldestCursor: capped[0]?.info.id ?? null,
+      exhausted: capped.length < limit,
+      entries: capped,
+    })
   }
 
   return {
@@ -476,6 +493,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
     },
 
     load: async (sessionID, opts) => {
+      const s = telemetry.span("chat", "messages:load", { sessionID, limit: opts?.limit })
       const startAt = Date.now()
       addCrashBreadcrumb("messages-load:start", {
         sessionID,
@@ -492,6 +510,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
       const loadedAt = state.loadedAt[sessionID]
 
       if (!opts?.force && trimToRecent > 0 && hasMessages && (state.messages[sessionID]?.length ?? 0) > trimToRecent) {
+        s.end({ path: "trim" })
         set((prev) => {
           const existing = prev.messages[sessionID] ?? []
           if (existing.length <= trimToRecent) {
@@ -578,6 +597,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
           ageMs: now - loadedAt,
           count: state.messages[sessionID]?.length ?? 0,
         })
+        s.end({ path: "memory-ttl", count: state.messages[sessionID]?.length ?? 0 })
         set((prev) => ({
           sessionOrder: touchSessionOrder(prev.sessionOrder, sessionID),
         }))
@@ -590,6 +610,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
           ageMs: loadedAt ? now - loadedAt : -1,
           count: state.messages[sessionID]?.length ?? 0,
         })
+        s.end({ path: "memory", count: state.messages[sessionID]?.length ?? 0 })
         set((prev) => ({
           sessionOrder: touchSessionOrder(prev.sessionOrder, sessionID),
         }))
@@ -597,6 +618,24 @@ export const useMessages = createStore<MessageState>((set, get) => {
       }
 
       if (!hasMessages && !opts?.force) {
+        // Fast path: synchronous in-process cache — no I/O, survives LRU eviction.
+        const memCached = memorySessionCache.get(sessionID)
+        if (memCached && memCached.entries.length > 0) {
+          const cacheAge = now - memCached.savedAt
+          applyLoadedEntries(sessionID, memCached.entries, limit, memCached.savedAt)
+          addCrashBreadcrumb("messages-load:mem-cache-hit", {
+            sessionID,
+            ageMs: cacheAge,
+            count: memCached.entries.length,
+          })
+          s.end({ path: "mem-cache", count: memCached.entries.length })
+          // Background refresh if the in-process copy is stale.
+          if (cacheAge >= MESSAGE_CACHE_TTL_MS) {
+            void get().load(sessionID, { force: true, limit })
+          }
+          return
+        }
+
         const cached = await readCachedSession(sessionID)
         if (cached && cached.entries.length > 0) {
           const cacheAge = now - cached.savedAt
@@ -612,6 +651,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
               ageMs: cacheAge,
             })
           }
+          s.end({ path: "cache", count: cached.entries.length })
           return
         }
       }
@@ -629,7 +669,6 @@ export const useMessages = createStore<MessageState>((set, get) => {
           path: { id: sessionID },
           query: {
             limit,
-            compact: opts?.compact ?? true,
           },
         })
         const elapsed = (globalThis.performance?.now?.() ?? Date.now()) - requestStart
@@ -644,12 +683,14 @@ export const useMessages = createStore<MessageState>((set, get) => {
             elapsedMs: Math.round(elapsed),
             totalMs: Date.now() - startAt,
           })
+          s.end({ path: "network", count: entries.length, elapsedMs: Math.round(elapsed) })
           if (__DEV__) {
             const bytes = JSON.stringify(result.data).length
             console.log(`[chat-load] ${sessionID} limit=${limit} time=${elapsed.toFixed(1)}ms bytes=${bytes}`)
           }
         }
       } catch (error) {
+        s.end({ path: "error" })
         addCrashBreadcrumb(
           "messages-load:error",
           {
@@ -672,6 +713,8 @@ export const useMessages = createStore<MessageState>((set, get) => {
     loadMore: async (sessionID) => {
       const state = get()
       if (state.loading[sessionID] || state.exhausted[sessionID]) return
+
+      telemetry.track("chat", "messages:loadMore", { sessionID })
 
       const beforeMessageID = state.oldestCursor[sessionID] ?? state.messages[sessionID]?.[0]?.id
       if (!beforeMessageID) {
@@ -787,7 +830,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
         }))
 
         try {
-          await get().load(sessionID, { limit, compact: true })
+          await get().load(sessionID, { limit })
         } finally {
           set((prev) => ({
             prefetching: {
@@ -802,6 +845,8 @@ export const useMessages = createStore<MessageState>((set, get) => {
     hydrateMessage: async (sessionID, messageID) => {
       const state = get()
       if (state.hydrated[messageID] || state.hydrating[messageID]) return
+
+      telemetry.track("chat", "messages:hydrate", { sessionID, messageID })
 
       set((prev) => ({
         hydrating: {
@@ -877,6 +922,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
     },
 
     send: async (sessionID, content) => {
+      telemetry.track("chat", "messages:send", { sessionID, length: content.length })
       const id = `optimistic-user-${Date.now()}`
       const optimisticUser: Message = {
         id,
@@ -988,6 +1034,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
     },
 
     sendNew: async (content) => {
+      telemetry.track("chat", "messages:sendNew", { length: content.length })
       const session = await useSessions.getState().create()
       try {
         await get().send(session.id, content)
@@ -1006,6 +1053,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
     },
 
     abort: async (sessionID) => {
+      telemetry.track("chat", "messages:abort", { sessionID })
       try {
         await client().session.abort({ path: { id: sessionID } })
       } catch {
@@ -1167,7 +1215,6 @@ export const useMessages = createStore<MessageState>((set, get) => {
               parts[messageID] = next
               partIndexByMessage[messageID] = partIndex
               hydrated[messageID] = isHydratedParts(next)
-              incrementVersion(partsVersionBySession, sessionID)
               loadedAt[sessionID] = Date.now()
               if (field === "text" && (nextPart.type === "text" || nextPart.type === "reasoning")) {
                 markChatFirstToken(sessionID)
@@ -1187,7 +1234,9 @@ export const useMessages = createStore<MessageState>((set, get) => {
               const partIndex = partIndexByMessage[messageID] ?? buildPartIndex(existing)
               const idx = partIndex[partID] ?? -1
               const next =
-                idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing.filter((part) => part.id !== partID)
+                idx >= 0
+                  ? [...existing.slice(0, idx), ...existing.slice(idx + 1)]
+                  : existing.filter((part) => part.id !== partID)
               parts[messageID] = next
               partIndexByMessage[messageID] = buildPartIndex(next)
               hydrated[messageID] = isHydratedParts(next)
@@ -1226,10 +1275,8 @@ export const useMessages = createStore<MessageState>((set, get) => {
           sessionOrder,
         }
 
-        return {
-          ...next,
-          ...trimStateForLRU(next),
-        }
+        const trimmed = next.sessionOrder.length > MAX_ACTIVE_SESSIONS ? trimStateForLRU(next) : null
+        return trimmed ? { ...next, ...trimmed } : next
       })
 
       for (const sessionID of touchedForPersist) {
@@ -1265,9 +1312,7 @@ export const useMessages = createStore<MessageState>((set, get) => {
     },
 
     _removePart: (messageID, partID) => {
-      const sessionID = Object.entries(get().messages).find(([, sessionMessages]) =>
-        sessionMessages.some((message) => message.id === messageID),
-      )?.[0]
+      const sessionID = Object.entries(get().messageIndexBySession).find(([, index]) => messageID in index)?.[0]
       if (!sessionID) {
         set((state) => {
           const next = (state.parts[messageID] ?? []).filter((part) => part.id !== partID)

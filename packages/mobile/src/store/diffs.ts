@@ -6,6 +6,7 @@ import type { DiffSummary, SessionFileDiff } from "../features/diff/types"
 import { normalizeDiffList } from "../features/diff/normalize"
 import { useSessions } from "./sessions"
 import { toErrorMessage } from "../util/error-message"
+import { telemetry } from "../perf/telemetry"
 
 const DIFF_CACHE_TTL_MS = 30_000
 
@@ -114,7 +115,9 @@ export const useDiffs = createStore<DiffState>((set, get) => ({
     }))
 
     try {
+      const s = telemetry.span("diff", "diff:fetch", { sessionID })
       const normalized = await fetchDiffForSession(sessionID)
+      s.end({ files: normalized.length })
       set((prev) => ({
         bySession: {
           ...prev.bySession,
@@ -149,6 +152,7 @@ export const useDiffs = createStore<DiffState>((set, get) => ({
 
   setSessionDiff: (sessionID, diff) => {
     const normalized = normalizeDiffList(diff)
+    telemetry.track("diff", "diff:set", { sessionID, files: normalized.length })
     set((prev) => ({
       bySession: {
         ...prev.bySession,

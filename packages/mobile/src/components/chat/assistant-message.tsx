@@ -7,7 +7,7 @@ import * as Clipboard from "expo-clipboard"
 import { useMessageParts } from "../../api/hooks"
 import { useMessages } from "../../store/messages"
 import { useTheme } from "../../theme"
-import { isTodoToolPart, PartRenderer } from "./part"
+import { isTodoToolPart, PartRenderer, GroupedBlurb, groupConsecutiveParts } from "./part"
 
 const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string }>
 
@@ -30,8 +30,9 @@ export const AssistantMessage = memo(function AssistantMessage({
   const totalTokens = message.tokens.input + message.tokens.output + message.tokens.reasoning
   const copyKey = useMemo(() => buildCopyCacheKey(parts), [parts])
   const canRetry = !!message.time.completed
-  const visibleParts = useMemo(() => parts.filter((part) => !isTodoToolPart(part)), [parts])
+  const visibleParts = useMemo(() => parts.filter((part) => !isTodoToolPart(part) && part.type !== "patch"), [parts])
   const activePartID = useMemo(() => resolveActivePartID(visibleParts, canRetry), [canRetry, visibleParts])
+  const grouped = useMemo(() => groupConsecutiveParts(visibleParts, activePartID), [visibleParts, activePartID])
   const onHydrateMessage = useCallback(
     (messageID: string) => {
       void hydrateMessage(message.sessionID, messageID)
@@ -60,21 +61,32 @@ export const AssistantMessage = memo(function AssistantMessage({
     })
   }, [canRetry, message.id, message.sessionID, send])
 
-  if (visibleParts.length === 0 && !diffFooter && !showFooter) return null
+  if (grouped.length === 0 && !diffFooter && !showFooter) return null
 
   return (
     <View style={styles.container}>
       <View style={styles.content}>
-        {visibleParts.map((part) => (
-          <PartRenderer
-            key={part.id}
-            part={part}
-            isUser={false}
-            isActive={part.id === activePartID}
-            isStreamingComplete={!!message.time.completed}
-            onHydrateMessage={onHydrateMessage}
-          />
-        ))}
+        {grouped.map((item, i) =>
+          item.kind === "single" ? (
+            <PartRenderer
+              key={item.part.id || `part:${i}`}
+              part={item.part}
+              isUser={false}
+              isActive={item.part.id === activePartID}
+              isStreamingComplete={!!message.time.completed}
+              onHydrateMessage={onHydrateMessage}
+            />
+          ) : (
+            <GroupedBlurb
+              key={`group:${item.parts[0].id || i}`}
+              action={item.action}
+              parts={item.parts}
+              all={item.all}
+              isStreamingComplete={!!message.time.completed}
+              onHydrateMessage={onHydrateMessage}
+            />
+          ),
+        )}
       </View>
       {showFooter ? (
         <View style={styles.footer}>
@@ -90,7 +102,11 @@ export const AssistantMessage = memo(function AssistantMessage({
               accessibilityLabel="Retry response"
               hitSlop={8}
             >
-              <FeatherIcon name="rotate-ccw" size={14} color={canRetry ? theme.colors.textTertiary : theme.colors.textTertiary + "80"} />
+              <FeatherIcon
+                name="rotate-ccw"
+                size={14}
+                color={canRetry ? theme.colors.textTertiary : theme.colors.textTertiary + "80"}
+              />
             </Pressable>
             <Pressable
               style={({ pressed }) => [styles.footerIconButton, pressed && styles.footerIconButtonPressed]}

@@ -4,6 +4,7 @@ import MarkdownBase from "react-native-markdown-display"
 import { StreamdownRN } from "streamdown-rn"
 import { useTheme, type Theme } from "../../theme"
 import { FEATURE_FLAGS } from "../../config/feature-flags"
+import { telemetry } from "../../perf/telemetry"
 import { CodeBlock } from "./code-block"
 
 type Props = {
@@ -51,6 +52,7 @@ class MarkdownErrorBoundary extends React.Component<BoundaryProps, { hasError: b
 
   componentDidCatch(error: Error) {
     this.props.onCrash?.()
+    telemetry.error("ui", "markdown:crash", { message: error.message })
     if (__DEV__) {
       console.warn("[markdown] stream renderer crashed, falling back", error)
     }
@@ -205,7 +207,8 @@ function useTypedStreamingText(input: string, opts: { enabled: boolean; isComple
       return
     }
 
-    const nonAppendReset = prevTarget.length > 0 && !input.startsWith(prevTarget) && !input.startsWith(displayedRef.current)
+    const nonAppendReset =
+      prevTarget.length > 0 && !input.startsWith(prevTarget) && !input.startsWith(displayedRef.current)
     if (nonAppendReset || isComplete || input.length > TYPED_STREAM_MAX_CHARS) {
       stop()
       if (displayedRef.current !== input) syncDisplayed(input)
@@ -239,15 +242,7 @@ function rules(theme: Theme) {
     code_inline: (node: { key: string; content?: string }) => (
       <Text
         key={node.key}
-        style={{
-          fontFamily: "Geist Mono",
-          fontSize: 13,
-          backgroundColor: theme.colors.codeInline,
-          color: theme.colors.codeInlineText,
-          paddingHorizontal: 4,
-          paddingVertical: 1,
-          borderRadius: 4,
-        }}
+        style={[styles.codeInline, { backgroundColor: theme.colors.codeInline, color: theme.colors.codeInlineText }]}
       >
         {node.content}
       </Text>
@@ -255,7 +250,7 @@ function rules(theme: Theme) {
     link: (node: { key: string; attributes?: { href?: string } }, children: React.ReactNode) => (
       <Text
         key={node.key}
-        style={{ color: theme.colors.link, textDecorationLine: "underline" }}
+        style={[styles.linkText, { color: theme.colors.link }]}
         onPress={() => {
           if (!node.attributes?.href) return
           Linking.openURL(node.attributes.href).catch(() => {
@@ -271,9 +266,7 @@ function rules(theme: Theme) {
 
 function stylesForVariant(theme: Theme, variant: "default" | "reasoning"): Record<string, TextStyle | ViewStyle> {
   const isReasoning = variant === "reasoning"
-  const baseText: TextStyle = isReasoning
-    ? { fontFamily: "Geist", fontStyle: "italic" }
-    : { fontFamily: "Geist" }
+  const baseText: TextStyle = isReasoning ? { fontFamily: "Geist", fontStyle: "italic" } : { fontFamily: "Geist" }
   const bodySize = isReasoning ? 13 : 15
   const bodyLine = isReasoning ? 18 : 23
   const heading1Size = isReasoning ? 16 : 22
@@ -284,10 +277,38 @@ function stylesForVariant(theme: Theme, variant: "default" | "reasoning"): Recor
   return {
     body: { ...baseText, color: theme.colors.text, fontSize: bodySize, lineHeight: bodyLine },
     paragraph: { ...baseText, marginTop: 0, marginBottom: isReasoning ? 6 : 6 },
-    heading1: { ...baseText, fontSize: heading1Size, fontWeight: "700" as const, marginBottom: 8, marginTop: 16, color: theme.colors.text },
-    heading2: { ...baseText, fontSize: heading2Size, fontWeight: "700" as const, marginBottom: 6, marginTop: 14, color: theme.colors.text },
-    heading3: { ...baseText, fontSize: heading3Size, fontWeight: "600" as const, marginBottom: 4, marginTop: 12, color: theme.colors.text },
-    heading4: { ...baseText, fontSize: heading4Size, fontWeight: "600" as const, marginBottom: 4, marginTop: 10, color: theme.colors.text },
+    heading1: {
+      ...baseText,
+      fontSize: heading1Size,
+      fontWeight: "700" as const,
+      marginBottom: 8,
+      marginTop: 16,
+      color: theme.colors.text,
+    },
+    heading2: {
+      ...baseText,
+      fontSize: heading2Size,
+      fontWeight: "700" as const,
+      marginBottom: 6,
+      marginTop: 14,
+      color: theme.colors.text,
+    },
+    heading3: {
+      ...baseText,
+      fontSize: heading3Size,
+      fontWeight: "600" as const,
+      marginBottom: 4,
+      marginTop: 12,
+      color: theme.colors.text,
+    },
+    heading4: {
+      ...baseText,
+      fontSize: heading4Size,
+      fontWeight: "600" as const,
+      marginBottom: 4,
+      marginTop: 10,
+      color: theme.colors.text,
+    },
     blockquote: {
       borderLeftWidth: 3,
       borderLeftColor: theme.colors.border,
@@ -319,7 +340,13 @@ function stylesForVariant(theme: Theme, variant: "default" | "reasoning"): Recor
   }
 }
 
-const LegacyMarkdown = memo(function LegacyMarkdown({ text, variant }: { text: string; variant: "default" | "reasoning" }) {
+const LegacyMarkdown = memo(function LegacyMarkdown({
+  text,
+  variant,
+}: {
+  text: string
+  variant: "default" | "reasoning"
+}) {
   const theme = useTheme()
   const mdRules = useMemo(() => rules(theme), [theme])
   const mdStyles = useMemo(() => stylesForVariant(theme, variant), [theme, variant])
@@ -374,10 +401,8 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
     [theme.colors, variant],
   )
 
-  if (!children) return null
-
-  const shouldTypeAnimate = allowTypedStreaming(children, variant, isComplete)
-  const streamingText = useTypedStreamingText(children, {
+  const shouldTypeAnimate = children ? allowTypedStreaming(children, variant, isComplete) : false
+  const streamingText = useTypedStreamingText(children || "", {
     enabled: shouldTypeAnimate,
     isComplete,
   })
@@ -390,6 +415,8 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       setUseLegacyRenderer(false)
     }
   }, [children])
+
+  if (!children) return null
 
   const fallback = <LegacyMarkdown text={streamingText} variant={variant} />
 
@@ -405,6 +432,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
             style={styles.markdown}
             onError={(error) => {
               setUseLegacyRenderer(true)
+              telemetry.error("ui", "markdown:fallback", { message: error.message })
               if (__DEV__) {
                 console.warn("[markdown] stream renderer error", error)
               }
@@ -429,5 +457,15 @@ const styles = StyleSheet.create({
   },
   reasoning: {
     opacity: 0.9,
+  },
+  codeInline: {
+    fontFamily: "Geist Mono",
+    fontSize: 13,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  linkText: {
+    textDecorationLine: "underline" as const,
   },
 })

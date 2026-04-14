@@ -1,7 +1,9 @@
-import { memo, useCallback, useMemo } from "react"
+import { memo, useCallback, useMemo, useState } from "react"
 import { View, Text, Pressable, ScrollView, StyleSheet } from "react-native"
 import * as Clipboard from "expo-clipboard"
 import { useTheme } from "../../theme"
+
+const VISIBLE_LINE_CAP = 30
 
 type Props = {
   code: string
@@ -10,13 +12,18 @@ type Props = {
 
 export const CodeBlock = memo(function CodeBlock({ code, language }: Props) {
   const theme = useTheme()
+  const [expanded, setExpanded] = useState(false)
 
   const copy = useCallback(() => {
     void Clipboard.setStringAsync(code)
   }, [code])
 
   const normalized = normalizeLanguage(language)
-  const highlighted = useMemo(() => cachedHighlight(code, normalized), [code, normalized])
+  const lines = useMemo(() => code.split("\n"), [code])
+  const capped = !expanded && lines.length > VISIBLE_LINE_CAP
+  const visible = capped ? lines.slice(0, VISIBLE_LINE_CAP).join("\n") : code
+  const highlighted = useMemo(() => cachedHighlight(visible, normalized), [visible, normalized])
+  const hiddenCount = capped ? lines.length - VISIBLE_LINE_CAP : 0
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.codeBackground, borderRadius: theme.radii.md }]}>
@@ -44,6 +51,16 @@ export const CodeBlock = memo(function CodeBlock({ code, language }: Props) {
           })}
         </Text>
       </ScrollView>
+      {capped ? (
+        <Pressable
+          onPress={() => setExpanded(true)}
+          style={[styles.showMore, { borderTopColor: theme.colors.codeBorder }]}
+        >
+          <Text style={[styles.showMoreText, { color: theme.colors.link }]}>
+            Show {hiddenCount} more line{hiddenCount === 1 ? "" : "s"}
+          </Text>
+        </Pressable>
+      ) : null}
     </View>
   )
 })
@@ -284,5 +301,15 @@ const styles = StyleSheet.create({
     fontFamily: "Geist Mono",
     fontSize: 13,
     lineHeight: 19,
+  },
+  showMore: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    alignItems: "center",
+  },
+  showMoreText: {
+    fontSize: 12,
+    fontWeight: "500",
   },
 })

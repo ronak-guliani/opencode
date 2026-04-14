@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
   Platform,
@@ -24,12 +24,14 @@ import type { SessionFileDiff } from "../../features/diff/types"
 import { normalizeDiffList } from "../../features/diff/normalize"
 import { synthesizeSessionDiff } from "../../features/diff/synthetic"
 import { addCrashBreadcrumb } from "../../perf/crash-breadcrumbs"
+import { telemetry } from "../../perf/telemetry"
 import { useSessionDiffSummary, useSessionPartsMap } from "../../api/hooks"
 import { useChat } from "./provider"
 import { useTheme } from "../../theme"
 import { UserMessage } from "./user-message"
 import { AssistantMessage } from "./assistant-message"
 import { DiffSummaryCard } from "./diff-summary-card"
+import { TurnDiffIndicator } from "./turn-diff-indicator"
 import {
   hasChanges,
   resolveEffectiveSessionData,
@@ -42,15 +44,17 @@ import {
 
 const STREAM_AUTOFOLLOW_MIN_GROWTH = 8
 const JUMP_TO_BOTTOM_DISTANCE = 320
-const OLDER_PREFETCH_OFFSET_PX = 1600
-const OLDER_PREFETCH_THROTTLE_MS = 320
-const TOP_LOAD_LOCK_OFFSET_PX = 10
 const SYNTHETIC_FALLBACK_MAX_MESSAGES = 120
 const TURN_DIFF_SYNTHESIS_MAX_TURNS = 18
 const TURN_DIFF_SYNTHESIS_LARGE_SESSION_CUTOFF = 220
 const TURN_DIFF_WINDOW_MAX_MESSAGES = 320
 const AnimatedView = Animated.View as React.ComponentType<{ style?: unknown; children?: React.ReactNode }>
-const FeatherIcon = Feather as unknown as React.ComponentType<{ name: string; size: number; color: string; style?: unknown }>
+const FeatherIcon = Feather as unknown as React.ComponentType<{
+  name: string
+  size: number
+  color: string
+  style?: unknown
+}>
 const Glass = LiquidGlassView as React.ComponentType<{
   interactive?: boolean
   style?: unknown
@@ -58,6 +62,42 @@ const Glass = LiquidGlassView as React.ComponentType<{
 }>
 const EMPTY_DIFFS: SessionFileDiff[] = []
 const EMPTY_DIFF_FOOTERS: DiffFooterMeta[] = []
+
+const EMPTY_TURN_FOOTER_MAP = new Map<string, DiffFooterMeta>()
+const IDLE_MVCP = {}
+
+const DiffFooterGroup = memo(function DiffFooterGroup({
+  footerMetas,
+  onOpenDiff,
+}: {
+  footerMetas: DiffFooterMeta[]
+  onOpenDiff: (meta: DiffFooterMeta) => void
+}) {
+  if (footerMetas.length === 0) return null
+  return (
+    <View style={styles.diffFooterStack}>
+      {footerMetas.map((meta, i) =>
+        meta.mode === "turn" ? (
+          <TurnDiffIndicator
+            key={`turn:${meta.turnMessageID || i}`}
+            diffs={meta.diffs}
+            onPress={() => onOpenDiff(meta)}
+          />
+        ) : (
+          <DiffSummaryCard
+            key={`session:${i}`}
+            mode={meta.mode}
+            title="Session diff"
+            diffs={meta.diffs}
+            summary={meta.summary}
+            isUpdating={meta.isUpdating}
+            onOpenDiff={() => onOpenDiff(meta)}
+          />
+        ),
+      )}
+    </View>
+  )
+})
 
 type Props = {
   sessionId: string
@@ -98,14 +138,10 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   const raf = useRef<number | null>(null)
   const bottomSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const loadingMoreRef = useRef(false)
-  const loadingOlderVisibleRef = useRef(false)
   const userInteractingRef = useRef(false)
   const momentumActiveRef = useRef(false)
   const contentHeightRef = useRef(0)
-  const lastScrollOffsetYRef = useRef(0)
-  const topLockDuringLoadRef = useRef(false)
   const jumpVisibleRef = useRef(false)
-  const lastOlderPrefetchAtRef = useRef(0)
   const malformedMessageKeysRef = useRef(new Set<string>())
 
   const logMalformedMessage = useCallback(
@@ -132,12 +168,6 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   )
 
   const count = messages.length
-  const olderPrefetchOffset = useMemo(() => {
-    if (count >= 2000) return 2800
-    if (count >= 1200) return 2200
-    if (count >= 600) return 1800
-    return OLDER_PREFETCH_OFFSET_PX
-  }, [count])
   const latestAssistantIndex = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const candidate = messages[i]
@@ -221,7 +251,9 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
 
   const latestAssistant = latestAssistantIndex >= 0 ? messages[latestAssistantIndex] : undefined
   const latestAssistantID =
-    latestAssistant && latestAssistant.role === "assistant" && typeof latestAssistant.id === "string" ? latestAssistant.id : ""
+    latestAssistant && latestAssistant.role === "assistant" && typeof latestAssistant.id === "string"
+      ? latestAssistant.id
+      : ""
   const latestAssistantCreatedAt = useMemo(() => {
     if (!latestAssistant || latestAssistant.role !== "assistant") return 0
     return Math.max(0, asNumber(latestAssistant.time?.created))
@@ -290,6 +322,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   )
 
   const turnFooterByAssistantID = useMemo(() => {
+    if (isBusy) return EMPTY_TURN_FOOTER_MAP
     const result = new Map<string, DiffFooterMeta>()
     const entries = Array.from(assistantMessagesByParentID.entries())
     const maxTurns = messages.length > TURN_DIFF_SYNTHESIS_LARGE_SESSION_CUTOFF ? 1 : TURN_DIFF_SYNTHESIS_MAX_TURNS
@@ -323,7 +356,15 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
       if (turnFooterMeta) result.set(targetAssistant.id, turnFooterMeta)
     }
     return result
-  }, [assistantMessagesByParentID, isBusy, latestAssistantID, messages.length, partsByMessage, userMessagesByID, userSummaryDiffsByID])
+  }, [
+    assistantMessagesByParentID,
+    isBusy,
+    latestAssistantID,
+    messages.length,
+    partsByMessage,
+    userMessagesByID,
+    userSummaryDiffsByID,
+  ])
 
   const diffFootersByAssistantID = useMemo(() => {
     return resolveFootersByAssistant({
@@ -392,11 +433,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     userInteractingRef.current = false
     momentumActiveRef.current = false
     contentHeightRef.current = 0
-    lastScrollOffsetYRef.current = 0
-    topLockDuringLoadRef.current = false
     jumpVisibleRef.current = false
-    loadingOlderVisibleRef.current = false
-    lastOlderPrefetchAtRef.current = 0
     setShowJump(false)
     setLoadingOlder(false)
     if (raf.current !== null) {
@@ -441,21 +478,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
             message={item}
             showFooter={index === latestAssistantIndex}
             diffFooter={
-              footerMetas.length > 0 ? (
-                <View style={styles.diffFooterStack}>
-                  {footerMetas.map((meta, footerIndex) => (
-                    <DiffSummaryCard
-                      key={`${meta.mode}:${meta.turnMessageID || "session"}:${footerIndex}`}
-                      mode={meta.mode}
-                      title={meta.mode === "turn" ? "Turn diff" : "Session diff"}
-                      diffs={meta.diffs}
-                      summary={meta.summary}
-                      isUpdating={meta.isUpdating}
-                      onOpenDiff={() => openDiff(meta)}
-                    />
-                  ))}
-                </View>
-              ) : null
+              footerMetas.length > 0 ? <DiffFooterGroup footerMetas={footerMetas} onOpenDiff={openDiff} /> : null
             }
           />
         )
@@ -465,53 +488,38 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     [diffFootersByAssistantID, latestAssistantIndex, logMalformedMessage, openDiff],
   )
 
-  const keyExtractor = useCallback((item: Message, index: number) => {
-    if (item && typeof item.id === "string" && item.id.length > 0) return item.id
-    logMalformedMessage("key-extractor-fallback", item, index)
-    return `unknown-message-${index}`
-  }, [logMalformedMessage])
-
-  const getItemType = useCallback((item: Message) => {
-    if (item && typeof item.role === "string") return item.role
-    logMalformedMessage("get-item-type-fallback", item, -1)
-    return "unknown"
-  }, [logMalformedMessage])
-
-  const triggerLoadMore = useCallback(
-    function triggerLoadMoreImpl(showLoader: boolean, allowFollowup = true) {
-      if (!didInitialScroll.current) return
-      if (loadingMoreRef.current || exhaustedSession) return
-      loadingMoreRef.current = true
-      topLockDuringLoadRef.current = false
-      loadingOlderVisibleRef.current = showLoader
-      if (showLoader) setLoadingOlder(true)
-      void loadMore(sessionId).finally(() => {
-        loadingMoreRef.current = false
-        topLockDuringLoadRef.current = false
-        if (allowFollowup && !exhaustedSession && lastScrollOffsetYRef.current <= olderPrefetchOffset * 0.45) {
-          // If the user is still very close to the top, fetch one extra page to avoid blank gaps.
-          triggerLoadMoreImpl(true, false)
-          return
-        }
-        if (loadingOlderVisibleRef.current && !loadingMoreRef.current) {
-          loadingOlderVisibleRef.current = false
-          setLoadingOlder(false)
-        }
-      })
+  const keyExtractor = useCallback(
+    (item: Message, index: number) => {
+      if (item && typeof item.id === "string" && item.id.length > 0) return item.id
+      logMalformedMessage("key-extractor-fallback", item, index)
+      return `unknown-message-${index}`
     },
-    [exhaustedSession, loadMore, olderPrefetchOffset, sessionId],
+    [logMalformedMessage],
   )
+
+  const getItemType = useCallback(
+    (item: Message) => {
+      if (item && typeof item.role === "string") return item.role
+      logMalformedMessage("get-item-type-fallback", item, -1)
+      return "unknown"
+    },
+    [logMalformedMessage],
+  )
+
+  const handleLoadMore = useCallback(() => {
+    if (loadingMoreRef.current || exhaustedSession) return
+    loadingMoreRef.current = true
+    setLoadingOlder(true)
+    telemetry.track("chat", "chat:loadMore", { sessionID: sessionId })
+    void loadMore(sessionId).finally(() => {
+      loadingMoreRef.current = false
+      setLoadingOlder(false)
+    })
+  }, [exhaustedSession, loadMore, sessionId])
 
   const handleScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent
-      lastScrollOffsetYRef.current = contentOffset.y
-      if (loadingMoreRef.current && contentOffset.y < TOP_LOAD_LOCK_OFFSET_PX) {
-        if (!topLockDuringLoadRef.current) {
-          topLockDuringLoadRef.current = true
-          listRef.current?.scrollToOffset({ offset: TOP_LOAD_LOCK_OFFSET_PX, animated: false })
-        }
-      }
       const distance = contentSize.height - contentOffset.y - layoutMeasurement.height
       isAtEnd.value = distance < 150
       const shouldShow = distance > JUMP_TO_BOTTOM_DISTANCE
@@ -519,29 +527,13 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
         jumpVisibleRef.current = shouldShow
         setShowJump(shouldShow)
       }
-
-      if (
-        contentOffset.y <= olderPrefetchOffset &&
-        didInitialScroll.current &&
-        !loadingMoreRef.current &&
-        !exhaustedSession
-      ) {
-        const now = Date.now()
-        if (now - lastOlderPrefetchAtRef.current >= OLDER_PREFETCH_THROTTLE_MS) {
-          lastOlderPrefetchAtRef.current = now
-          triggerLoadMore(true)
-        }
-      }
     },
-    [exhaustedSession, isAtEnd, olderPrefetchOffset, triggerLoadMore],
+    [isAtEnd],
   )
 
   const onStartReached = useCallback(() => {
-    const now = Date.now()
-    if (now - lastOlderPrefetchAtRef.current < OLDER_PREFETCH_THROTTLE_MS) return
-    lastOlderPrefetchAtRef.current = now
-    triggerLoadMore(true)
-  }, [triggerLoadMore])
+    // no-op: loading is manual via the "Load more" button
+  }, [])
 
   const onScrollBeginDrag = useCallback(() => {
     userInteractingRef.current = true
@@ -567,6 +559,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     (_width: number, height: number) => {
       const previousHeight = contentHeightRef.current
       contentHeightRef.current = height
+
       if (initialBottomSyncPendingRef.current && didInitialScroll.current && count > 0) {
         initialBottomSyncPendingRef.current = false
         scheduleScrollToEnd(false)
@@ -606,7 +599,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
   )
 
   const maintainVisibleContentPosition = useMemo(() => {
-    if (!isBusy) return undefined
+    if (!isBusy) return IDLE_MVCP
     return {
       startRenderingFromBottom: true,
       autoscrollToTopThreshold: count < 1200 ? 0.2 : undefined,
@@ -619,9 +612,8 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     if (count >= 2400) return Platform.OS === "ios" ? 1800 : 1700
     if (count >= 1200) return Platform.OS === "ios" ? 1400 : 1320
     if (count >= 500) return Platform.OS === "ios" ? 1000 : 940
-    if (isBusy) return Platform.OS === "ios" ? 760 : 720
-    return Platform.OS === "ios" ? 460 : 500
-  }, [count, isBusy])
+    return Platform.OS === "ios" ? 760 : 720
+  }, [count])
   const jumpBottom = Math.max(composerH + 14, insets.bottom + 60)
 
   const onListLoad = useCallback(() => {
@@ -629,30 +621,47 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
     didInitialScroll.current = true
     if (firstLoad) {
       prevCount.current = count
-      if (count > 0) {
-        scheduleScrollToEnd(false)
-      }
+      // initialScrollIndex already positions the list at the bottom on first render,
+      // so no explicit scrollToEnd needed here.
     }
     addCrashBreadcrumb("chat-list:on-load", { sessionID: sessionId, count })
-  }, [count, scheduleScrollToEnd, sessionId])
+  }, [count, sessionId])
 
   const listHeader = useMemo(() => {
-    if (exhaustedSession || !loadingOlder) return null
+    if (exhaustedSession) return null
     return (
-      <View
-        style={[
-          styles.olderLoadingHeader,
+      <Pressable
+        style={({ pressed }) => [
+          styles.loadMoreButton,
           {
-            borderColor: theme.colors.borderSubtle,
-            backgroundColor: theme.colors.background,
+            borderColor: theme.colors.border,
+            backgroundColor: theme.colors.surfaceRaised,
           },
+          pressed && styles.loadMorePressed,
         ]}
+        onPress={handleLoadMore}
+        disabled={loadingOlder}
+        accessibilityRole="button"
+        accessibilityLabel="Load older messages"
       >
-        <ActivityIndicator size="small" color={theme.colors.textSecondary} />
-        <Text style={[styles.olderLoadingText, { color: theme.colors.textSecondary }]}>Loading older messages...</Text>
-      </View>
+        {loadingOlder ? (
+          <ActivityIndicator size="small" color={theme.colors.textSecondary} />
+        ) : (
+          <FeatherIcon name="chevrons-up" size={14} color={theme.colors.textSecondary} />
+        )}
+        <Text style={[styles.loadMoreText, { color: theme.colors.textSecondary }]}>
+          {loadingOlder ? "Loading..." : "Load older messages"}
+        </Text>
+      </Pressable>
     )
-  }, [exhaustedSession, loadingOlder, theme.colors.background, theme.colors.borderSubtle, theme.colors.textSecondary])
+  }, [
+    exhaustedSession,
+    handleLoadMore,
+    loadingOlder,
+    theme.colors.border,
+    theme.colors.surfaceRaised,
+    theme.colors.textSecondary,
+  ])
 
   useEffect(() => {
     if (!didInitialScroll.current) {
@@ -665,7 +674,13 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
       return
     }
 
-    if (isBusy && count > prevCount.current && isAtEnd.value && !userInteractingRef.current && !momentumActiveRef.current) {
+    if (
+      isBusy &&
+      count > prevCount.current &&
+      isAtEnd.value &&
+      !userInteractingRef.current &&
+      !momentumActiveRef.current
+    ) {
       scheduleScrollToEnd(false)
     }
     prevCount.current = count
@@ -689,6 +704,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
         onContentSizeChange={onContentSizeChange}
         onLoad={onListLoad}
         scrollEventThrottle={16}
+        initialScrollIndex={count > 0 ? count - 1 : undefined}
         drawDistance={drawDistance}
         onStartReached={onStartReached}
         onStartReachedThreshold={0.7}
@@ -699,7 +715,6 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
         alwaysBounceVertical={false}
         overScrollMode="never"
         maintainVisibleContentPosition={maintainVisibleContentPosition}
-        removeClippedSubviews={Platform.OS === "ios" ? false : true}
         ListHeaderComponent={listHeader}
         ListFooterComponent={
           !latestAssistant && sessionFooterMeta ? (
@@ -720,6 +735,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
             <Pressable
               style={({ pressed }) => [styles.jumpButton, pressed && styles.jumpPressed]}
               onPress={() => {
+                telemetry.track("chat", "chat:jumpToBottom", { sessionID: sessionId })
                 userInteractingRef.current = false
                 momentumActiveRef.current = false
                 scheduleScrollToEnd(false)
@@ -744,6 +760,7 @@ export function MessagesList({ sessionId, messages, topPadding }: Props) {
               },
             ]}
             onPress={() => {
+              telemetry.track("chat", "chat:jumpToBottom", { sessionID: sessionId })
               userInteractingRef.current = false
               momentumActiveRef.current = false
               scheduleScrollToEnd(false)
@@ -774,19 +791,22 @@ const styles = StyleSheet.create({
   diffFooterStack: {
     gap: 2,
   },
-  olderLoadingHeader: {
+  loadMoreButton: {
     alignSelf: "center",
     marginBottom: 10,
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
     minHeight: 30,
   },
-  olderLoadingText: {
+  loadMorePressed: {
+    opacity: 0.6,
+  },
+  loadMoreText: {
     fontSize: 12,
     fontWeight: "500",
   },

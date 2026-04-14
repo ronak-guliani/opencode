@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, memo, useState } from "react"
+import { useCallback, useMemo, memo, useState } from "react"
 import { View, Text, TextInput, Pressable, StyleSheet, RefreshControl, Alert } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LiquidGlassView, isLiquidGlassSupported } from "@callstack/liquid-glass"
@@ -14,7 +14,6 @@ import { useConnection } from "../../store/connection"
 import { useTheme } from "../../theme"
 import { relative } from "../../util/format"
 import { SessionListSkeleton } from "../skeleton"
-import { AnimatedStatusDot } from "../status-dot"
 import { client } from "../../api/client"
 import { ServerSwitcher } from "./server-switcher"
 
@@ -46,13 +45,30 @@ type Props = {
   onServerSwitched?: () => void
 }
 
-type SectionItem = {
+type ProjectHeaderItem = {
+  type: "header"
   project: Project
   sessions: Session[]
   count: number
   collapsed: boolean
   active: boolean
 }
+
+type SessionRowItem = {
+  type: "session"
+  session: Session
+  isLast: boolean
+  worktree: string
+}
+
+type LoadMoreItem = {
+  type: "load-more"
+  worktree: string
+  remaining: number
+  chunk: number
+}
+
+type FlatItem = ProjectHeaderItem | SessionRowItem | LoadMoreItem
 
 function resolveRouteSessionID(value: string | string[] | undefined) {
   if (typeof value === "string") return value || null
@@ -64,13 +80,7 @@ function resolveRouteSessionID(value: string | string[] | undefined) {
   return null
 }
 
-export const Sidebar = memo(function Sidebar({
-  onSelect,
-  onNew,
-  onSettings,
-  sidebarVisible,
-  onServerSwitched,
-}: Props) {
+export const Sidebar = memo(function Sidebar({ onSelect, onNew, onSettings, sidebarVisible, onServerSwitched }: Props) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
   const projects = useSessions((s) => s.projects)
@@ -85,6 +95,7 @@ export const Sidebar = memo(function Sidebar({
   const routeParams = useGlobalSearchParams<{ id?: string | string[] }>()
   const [query, setQuery] = useState("")
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({})
   const routeSessionID = useMemo(() => resolveRouteSessionID(routeParams.id), [routeParams.id])
   const activeSessionID = routeSessionID ?? currentSessionID
 
@@ -131,19 +142,43 @@ export const Sidebar = memo(function Sidebar({
       return bTime - aTime
     })
 
-    return orderedProjects.map((project) => {
+    const flat: FlatItem[] = []
+    for (const project of orderedProjects) {
       const sessions = grouped[project.worktree] ?? []
       const isCollapsed = collapsed[project.worktree] ?? false
-      const hasActiveSession = !!activeSessionID && sessions.some((session) => session.id === activeSessionID)
-      return {
+      const hasActiveSession = !!activeSessionID && sessions.some((s) => s.id === activeSessionID)
+      flat.push({
+        type: "header",
         project,
         sessions,
         count: sessions.length,
         collapsed: isCollapsed,
         active: hasActiveSession || project.worktree === directory,
+      })
+      if (!isCollapsed && sessions.length > 0) {
+        const cap = Math.max(SESSION_RENDER_CHUNK, visibleCounts[project.worktree] ?? SESSION_RENDER_CHUNK)
+        const visible = sessions.slice(0, cap)
+        const remaining = Math.max(0, sessions.length - visible.length)
+        for (let i = 0; i < visible.length; i++) {
+          flat.push({
+            type: "session",
+            session: visible[i],
+            isLast: i === visible.length - 1 && remaining === 0,
+            worktree: project.worktree,
+          })
+        }
+        if (remaining > 0) {
+          flat.push({
+            type: "load-more",
+            worktree: project.worktree,
+            remaining,
+            chunk: Math.min(remaining, SESSION_RENDER_CHUNK),
+          })
+        }
       }
-    })
-  }, [activeSessionID, collapsed, directory, filteredSessions, projectsWithFallback])
+    }
+    return flat
+  }, [activeSessionID, collapsed, directory, filteredSessions, projectsWithFallback, visibleCounts])
 
   const handleArchive = useCallback(
     (id: string) => {
@@ -192,7 +227,17 @@ export const Sidebar = memo(function Sidebar({
 
   const toggleProject = useCallback((worktree: string) => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-    setCollapsed((state) => ({ ...state, [worktree]: !(state[worktree] ?? false) }))
+    setCollapsed((state) => {
+      const next = !(state[worktree] ?? false)
+      if (next) {
+        setVisibleCounts((counts) => {
+          if (!(worktree in counts)) return counts
+          const { [worktree]: _, ...rest } = counts
+          return rest
+        })
+      }
+      return { ...state, [worktree]: next }
+    })
   }, [])
 
   const allCollapsed = useMemo(() => {
@@ -220,42 +265,130 @@ export const Sidebar = memo(function Sidebar({
     [onNew],
   )
 
+  const loadMoreSessions = useCallback((worktree: string) => {
+    setVisibleCounts((counts) => ({
+      ...counts,
+      [worktree]: (counts[worktree] ?? SESSION_RENDER_CHUNK) + SESSION_RENDER_CHUNK,
+    }))
+  }, [])
+
+  const projectRowColors = useMemo(
+    () => ({
+      border: theme.colors.border,
+      surface: theme.colors.surface,
+      text: theme.colors.text,
+      textSecondary: theme.colors.textSecondary,
+      textTertiary: theme.colors.textTertiary,
+      surfaceRaised: theme.colors.surfaceRaised,
+    }),
+    [
+      theme.colors.border,
+      theme.colors.surface,
+      theme.colors.text,
+      theme.colors.textSecondary,
+      theme.colors.textTertiary,
+      theme.colors.surfaceRaised,
+    ],
+  )
+
+  const projectRowRadii = useMemo(() => ({ md: theme.radii.md }), [theme.radii.md])
+
   const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<SectionItem>) => {
+    ({ item }: ListRenderItemInfo<FlatItem>) => {
+      if (item.type === "header") {
+        return (
+          <ProjectRow
+            item={item}
+            onToggle={toggleProject}
+            onNew={handleCreateSession}
+            colors={projectRowColors}
+            radii={projectRowRadii}
+          />
+        )
+      }
+      if (item.type === "session") {
+        return (
+          <SessionRow
+            session={item.session}
+            onSelect={(session) => void onSelect(session)}
+            onArchive={handleArchive}
+            onDelete={handleDelete}
+            onShare={handleShare}
+            activeSessionID={activeSessionID}
+            textColor={theme.colors.text}
+            tertiaryColor={theme.colors.textTertiary}
+            surfaceColor={theme.colors.surface}
+          />
+        )
+      }
       return (
-        <ProjectSection
-          item={item}
-          onToggle={toggleProject}
-          onNew={handleCreateSession}
-          onSelect={(session) => void onSelect(session)}
-          onArchive={handleArchive}
-          onDelete={handleDelete}
-          onShare={handleShare}
-          activeSessionID={activeSessionID}
+        <LoadMoreRow
+          worktree={item.worktree}
+          remaining={item.remaining}
+          chunk={item.chunk}
+          onLoadMore={loadMoreSessions}
+          borderColor={theme.colors.border}
+          surfaceColor={theme.colors.surface}
+          textSecondaryColor={theme.colors.textSecondary}
         />
       )
     },
-    [activeSessionID, handleArchive, handleCreateSession, handleDelete, handleShare, onSelect, toggleProject],
+    [
+      activeSessionID,
+      handleArchive,
+      handleCreateSession,
+      handleDelete,
+      handleShare,
+      loadMoreSessions,
+      onSelect,
+      projectRowColors,
+      projectRowRadii,
+      theme.colors.border,
+      theme.colors.surface,
+      theme.colors.text,
+      theme.colors.textSecondary,
+      theme.colors.textTertiary,
+      toggleProject,
+    ],
   )
 
-  const keyExtractor = useCallback((item: SectionItem) => {
-    return `project-${item.project.id}-${item.project.worktree}`
+  const keyExtractor = useCallback((item: FlatItem) => {
+    if (item.type === "header") return `project-${item.project.id}-${item.project.worktree}`
+    if (item.type === "session") return `session-${item.session.id}`
+    return `load-more-${item.worktree}`
   }, [])
 
-  const getItemType = useCallback(() => "project", [])
+  const getItemType = useCallback((item: FlatItem) => item.type, [])
 
   const content = (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Text style={[styles.headerTitle, { color: theme.colors.text }]}>Threads</Text>
         <View style={styles.headerActions}>
-          <HeaderIconButton icon="compose" label="New Session" onPress={() => handleCreateSession()} />
+          <HeaderIconButton
+            icon="compose"
+            label="New Session"
+            onPress={() => handleCreateSession()}
+            textSecondaryColor={theme.colors.textSecondary}
+            surfaceColor={theme.colors.surface}
+            borderColor={theme.colors.border}
+          />
           <HeaderIconButton
             icon={allCollapsed ? "expand-all" : "collapse-all"}
             label={allCollapsed ? "Expand all projects" : "Collapse all projects"}
             onPress={toggleAll}
+            textSecondaryColor={theme.colors.textSecondary}
+            surfaceColor={theme.colors.surface}
+            borderColor={theme.colors.border}
           />
-          <HeaderIconButton icon="settings" label="Settings" onPress={onSettings} />
+          <HeaderIconButton
+            icon="settings"
+            label="Settings"
+            onPress={onSettings}
+            textSecondaryColor={theme.colors.textSecondary}
+            surfaceColor={theme.colors.surface}
+            borderColor={theme.colors.border}
+          />
         </View>
       </View>
 
@@ -343,12 +476,22 @@ const ProjectRow = memo(function ProjectRow({
   item,
   onToggle,
   onNew,
+  colors,
+  radii,
 }: {
-  item: SectionItem
+  item: ProjectHeaderItem
   onToggle: (worktree: string) => void
   onNew: (worktree: string) => void
+  colors: {
+    border: string
+    surface: string
+    text: string
+    textSecondary: string
+    textTertiary: string
+    surfaceRaised: string
+  }
+  radii: { md: number }
 }) {
-  const theme = useTheme()
   const parts = item.project.worktree.split(/[\\/]/).filter(Boolean)
   const name = parts[parts.length - 1] || item.project.worktree
 
@@ -357,122 +500,81 @@ const ProjectRow = memo(function ProjectRow({
       style={[
         styles.projectRow,
         {
-          borderColor: theme.colors.border,
-          backgroundColor: item.active ? theme.colors.surface : "transparent",
-          borderRadius: theme.radii.md,
+          borderColor: colors.border,
+          backgroundColor: item.active ? colors.surface : "transparent",
+          borderRadius: radii.md,
         },
       ]}
       onPress={() => onToggle(item.project.worktree)}
     >
       <View style={styles.projectMain}>
         <View style={styles.projectTitleRow}>
-          <FeatherIcon name="folder" size={14} color={theme.colors.textSecondary} />
-          <Text style={[styles.projectTitle, { color: theme.colors.text }]} numberOfLines={1}>
+          <FeatherIcon name="folder" size={14} color={colors.textSecondary} />
+          <Text style={[styles.projectTitle, { color: colors.text }]} numberOfLines={1}>
             {name}
           </Text>
         </View>
-        <Text
-          style={[styles.projectPath, { color: theme.colors.textTertiary }]}
-          numberOfLines={1}
-          ellipsizeMode="middle"
-        >
+        <Text style={[styles.projectPath, { color: colors.textTertiary }]} numberOfLines={1} ellipsizeMode="middle">
           {item.project.worktree}
         </Text>
       </View>
       <View style={styles.projectActions}>
         <Pressable
-          style={[styles.projectActionButton, { backgroundColor: theme.colors.surfaceRaised }]}
+          style={[styles.projectActionButton, { backgroundColor: colors.surfaceRaised }]}
           onPress={(event) => {
             event.stopPropagation()
             onNew(item.project.worktree)
           }}
           hitSlop={8}
         >
-          <FeatherIcon name="plus" size={14} color={theme.colors.textSecondary} />
+          <FeatherIcon name="plus" size={14} color={colors.textSecondary} />
         </Pressable>
-        <Text style={[styles.projectCount, { color: theme.colors.textTertiary }]}>{item.count}</Text>
+        <Text style={[styles.projectCount, { color: colors.textTertiary }]}>{item.count}</Text>
         <FeatherIcon
           style={styles.chevronGlyph}
           name={item.collapsed ? "chevron-right" : "chevron-down"}
           size={14}
-          color={theme.colors.textSecondary}
+          color={colors.textSecondary}
         />
       </View>
     </Pressable>
   )
 })
 
-const ProjectSection = memo(function ProjectSection({
-  item,
-  onToggle,
-  onNew,
-  onSelect,
-  onArchive,
-  onDelete,
-  onShare,
-  activeSessionID,
+const LoadMoreRow = memo(function LoadMoreRow({
+  worktree,
+  remaining,
+  chunk,
+  onLoadMore,
+  borderColor,
+  surfaceColor,
+  textSecondaryColor,
 }: {
-  item: SectionItem
-  onToggle: (worktree: string) => void
-  onNew: (worktree: string) => void
-  onSelect: (session: Session) => void | Promise<void>
-  onArchive: (id: string) => void
-  onDelete: (id: string) => void
-  onShare: (id: string) => void
-  activeSessionID: string | null
+  worktree: string
+  remaining: number
+  chunk: number
+  onLoadMore: (worktree: string) => void
+  borderColor: string
+  surfaceColor: string
+  textSecondaryColor: string
 }) {
-  const theme = useTheme()
-  const [visibleCount, setVisibleCount] = useState(SESSION_RENDER_CHUNK)
-  const visibleSessions = useMemo(
-    () => item.sessions.slice(0, Math.max(SESSION_RENDER_CHUNK, visibleCount)),
-    [item.sessions, visibleCount],
-  )
-  const remainingCount = Math.max(0, item.sessions.length - visibleSessions.length)
-
-  useEffect(() => {
-    setVisibleCount(SESSION_RENDER_CHUNK)
-  }, [item.project.worktree, item.sessions.length])
-
   return (
-    <View style={styles.projectSection}>
-      <ProjectRow item={item} onToggle={onToggle} onNew={onNew} />
-      {!item.collapsed && item.sessions.length > 0 ? (
-        <View style={[styles.sessionGroup, { borderLeftColor: theme.colors.borderSubtle }]}>
-          {visibleSessions.map((session, index) => (
-            <View
-              key={session.id}
-              style={[styles.sessionSlot, index === visibleSessions.length - 1 && styles.sessionSlotLast]}
-            >
-              <SessionRow
-                session={session}
-                onSelect={onSelect}
-                onArchive={onArchive}
-                onDelete={onDelete}
-                onShare={onShare}
-                activeSessionID={activeSessionID}
-              />
-            </View>
-          ))}
-          {remainingCount > 0 ? (
-            <Pressable
-              style={({ pressed }) => [
-                styles.loadMoreSessionsButton,
-                { borderColor: theme.colors.border, backgroundColor: theme.colors.surface },
-                pressed && styles.headerIconButtonPressed,
-              ]}
-              onPress={() => setVisibleCount((count) => count + SESSION_RENDER_CHUNK)}
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel="Load more sessions"
-            >
-              <Text style={[styles.loadMoreSessionsText, { color: theme.colors.textSecondary }]}>
-                Show {Math.min(remainingCount, SESSION_RENDER_CHUNK)} more ({remainingCount} remaining)
-              </Text>
-            </Pressable>
-          ) : null}
-        </View>
-      ) : null}
-    </View>
+    <Pressable
+      style={({ pressed }) => [
+        styles.loadMoreSessionsButton,
+        styles.sessionIndent,
+        { borderColor, backgroundColor: surfaceColor },
+        pressed && styles.headerIconButtonPressed,
+      ]}
+      onPress={() => onLoadMore(worktree)}
+      hitSlop={6}
+      accessibilityRole="button"
+      accessibilityLabel="Load more sessions"
+    >
+      <Text style={[styles.loadMoreSessionsText, { color: textSecondaryColor }]}>
+        Show {chunk} more ({remaining} remaining)
+      </Text>
+    </Pressable>
   )
 })
 
@@ -483,6 +585,9 @@ const SessionRow = memo(function SessionRow({
   onDelete,
   onShare,
   activeSessionID,
+  textColor,
+  tertiaryColor,
+  surfaceColor,
 }: {
   session: Session
   onSelect: (session: Session) => void | Promise<void>
@@ -490,8 +595,10 @@ const SessionRow = memo(function SessionRow({
   onDelete: (id: string) => void
   onShare: (id: string) => void
   activeSessionID: string | null
+  textColor: string
+  tertiaryColor: string
+  surfaceColor: string
 }) {
-  const theme = useTheme()
   const selected = activeSessionID === session.id
 
   const handleSelect = useCallback(() => {
@@ -512,7 +619,8 @@ const SessionRow = memo(function SessionRow({
     <Pressable
       style={({ pressed }) => [
         styles.sessionRow,
-        selected && { backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.accent },
+        styles.sessionIndent,
+        selected && { backgroundColor: surfaceColor },
         { opacity: pressed ? 0.72 : 1 },
       ]}
       onPress={handleSelect}
@@ -521,10 +629,10 @@ const SessionRow = memo(function SessionRow({
       hitSlop={6}
     >
       <View style={styles.sessionMain}>
-        <Text style={[styles.sessionTitle, { color: theme.colors.text }]} numberOfLines={1}>
+        <Text style={[styles.sessionTitle, { color: textColor }]} numberOfLines={1}>
           {session.title || "Untitled session"}
         </Text>
-        <Text style={[styles.sessionMeta, { color: theme.colors.textTertiary }]}>{relative(session.time.updated)}</Text>
+        <Text style={[styles.sessionMeta, { color: tertiaryColor }]}>{relative(session.time.updated)}</Text>
       </View>
     </Pressable>
   )
@@ -534,13 +642,18 @@ const HeaderIconButton = memo(function HeaderIconButton({
   icon,
   label,
   onPress,
+  textSecondaryColor,
+  surfaceColor,
+  borderColor,
 }: {
   icon: "compose" | "collapse-all" | "expand-all" | "settings"
   label: string
   onPress: () => void
+  textSecondaryColor: string
+  surfaceColor: string
+  borderColor: string
 }) {
-  const theme = useTheme()
-  const color = theme.colors.textSecondary
+  const color = textSecondaryColor
   const iconName =
     icon === "compose"
       ? "edit-3"
@@ -577,7 +690,7 @@ const HeaderIconButton = memo(function HeaderIconButton({
       style={({ pressed }) => [
         styles.headerIconButton,
         styles.headerIconButtonFallback,
-        { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
+        { backgroundColor: surfaceColor, borderColor },
         pressed && styles.headerIconButtonPressed,
       ]}
       onPress={onPress}
@@ -731,25 +844,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "transparent",
   },
-  sessionRowSelected: {
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.15)",
-  },
-  sessionGroup: {
-    marginLeft: 22,
-    marginTop: 8,
-    paddingLeft: 12,
-    paddingRight: 4,
-    paddingBottom: 8,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    gap: 8,
-  },
-  sessionSlot: {
-    borderRadius: 12,
-  },
-  sessionSlotLast: {
-    marginBottom: 2,
+  sessionIndent: {
+    marginLeft: 34,
   },
   sessionMain: {
     flex: 1,

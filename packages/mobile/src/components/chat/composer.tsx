@@ -74,9 +74,12 @@ export function Composer({ sessionId, pinnedTodo = null }: Props) {
     abort(sessionId)
   }, [sessionId, abort])
 
-  const handleLayout = useCallback((e: LayoutChangeEvent) => {
-    setComposerH(Math.round(e.nativeEvent.layout.height))
-  }, [setComposerH])
+  const handleLayout = useCallback(
+    (e: LayoutChangeEvent) => {
+      setComposerH(Math.round(e.nativeEvent.layout.height))
+    },
+    [setComposerH],
+  )
 
   const Sticky = KeyboardStickyView as React.ComponentType<{
     offset?: { closed?: number; opened?: number }
@@ -84,7 +87,11 @@ export function Composer({ sessionId, pinnedTodo = null }: Props) {
   }>
 
   const sendButton = busy ? (
-    <Pressable style={[styles.sendButton, { backgroundColor: "#fff" }]} onPress={handleAbort} accessibilityLabel="Stop response">
+    <Pressable
+      style={[styles.sendButton, { backgroundColor: "#fff" }]}
+      onPress={handleAbort}
+      accessibilityLabel="Stop response"
+    >
       <FeatherIcon name="square" size={10} color="#111827" />
     </Pressable>
   ) : (
@@ -192,7 +199,7 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     paddingLeft: 14,
     paddingRight: 6,
-    paddingVertical: 3,
+    paddingVertical: 6,
   },
   input: {
     flex: 1,
